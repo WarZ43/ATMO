@@ -3,6 +3,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
 from px4_msgs.msg import InputRc
+from std_msgs.msg import Bool
 
 # roboclaw and jetson
 from atmo.mpc.DriveControllerBase import DriveControllerBase
@@ -29,6 +30,11 @@ class DriveControllerHardware(DriveControllerBase):
             self.rc_listener_callback,
             qos_profile_sensor_data)
         self.subscription  # prevent unused variable warning
+        self.manual_override_subscription = self.create_subscription(
+            Bool,
+            '/atmo/rl/manual_override',
+            self.manual_override_callback,
+            qos_profile_sensor_data)
 
         # initialize drive speed and turn speed
         self.drive_speed_in = dead
@@ -36,6 +42,8 @@ class DriveControllerHardware(DriveControllerBase):
 
         # Manual vs automatic control
         self.manual = True
+        self.manual_override = False
+        self.offboard_automatic = False
 
         # roboclaw stuff
         self.address = 0x80
@@ -47,10 +55,12 @@ class DriveControllerHardware(DriveControllerBase):
         self.turn_speed_in   = msg.values[roll_channel]
 
         # set manual or automatic control of tilt angle
-        if msg.values[offboard_channel] == max:
-            self.manual = False
-        else:
-            self.manual = True
+        self.offboard_automatic = msg.values[offboard_channel] == max
+        self.manual = self.manual_override or not self.offboard_automatic
+
+    def manual_override_callback(self, msg):
+        self.manual_override = bool(msg.data)
+        self.manual = self.manual_override or not self.offboard_automatic
 
     def normalize(self,drive_speed_in):
         return (drive_speed_in-dead)/(max-dead)

@@ -7,6 +7,7 @@ from rclpy.qos import qos_profile_sensor_data
 
 # Message imports
 from px4_msgs.msg import InputRc
+from std_msgs.msg import Bool
 
 # Morphing Lander imports
 from atmo.mpc.TiltControllerBase import TiltControllerBase
@@ -33,6 +34,11 @@ class TiltHardware(TiltControllerBase):
             self.rc_listener_callback,
             qos_profile_sensor_data)
         self.rc_subscription        # rc subscription
+        self.manual_override_subscription = self.create_subscription(
+            Bool,
+            '/atmo/rl/manual_override',
+            self.manual_override_callback,
+            qos_profile_sensor_data)
 
         # Configure RC inputs
         self.min = min 
@@ -44,6 +50,8 @@ class TiltHardware(TiltControllerBase):
 
         # Manual vs automatic control
         self.manual = True
+        self.manual_override = False
+        self.offboard_automatic = False
 
         # Initialize roboclaw at given address
         self.address = 0x80
@@ -72,10 +80,12 @@ class TiltHardware(TiltControllerBase):
         self.reset_encoder = msg.values[encoder_channel]
 
         # set manual or automatic control of tilt angle
-        if msg.values[offboard_channel] == self.max:
-            self.manual = False
-        else:
-            self.manual = True
+        self.offboard_automatic = msg.values[offboard_channel] == self.max
+        self.manual = self.manual_override or not self.offboard_automatic
+
+    def manual_override_callback(self, msg):
+        self.manual_override = bool(msg.data)
+        self.manual = self.manual_override or not self.offboard_automatic
 
     def normalize(self,LS_in):
         return (LS_in-self.dead)/(self.max-self.dead)

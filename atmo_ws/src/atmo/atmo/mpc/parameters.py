@@ -32,7 +32,7 @@ params_['max_dy']                = 0.75                           # max y veloci
 params_['max_dz']                = 0.75                           # max z velocity
 params_['max_dpsi']              = np.pi/4                        # max yaw angular velocity
 params_['tilt_height']           = -1.2                           # height at which tilt is enabled
-params_['initial_tilt_sim']      = 0.0                            # initial tilt angle in simulation (radian)
+params_['initial_tilt_sim']      = float(getenv("ATMO_RL_INITIAL_TILT_ANGLE", "0.0"))  # initial tilt angle in simulation (radian)
 params_['d2f_throttle_thresh']   = 0.3                            # throttle value above which we switch from driving to flight mode
 
 # Transition parameters
