@@ -1,5 +1,9 @@
 **/rosbag2*
 **/*.json
+# The deployment contract is the written agreement between training and the
+# robot. It has to travel with the code, or the runtime's contract check has
+# nothing to check against.
+!atmo_ws/src/atmo/atmo/contracts/*.json
 **/__pycache__
 **/log
 **/build

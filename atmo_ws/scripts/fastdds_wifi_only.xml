@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  Dual-homing fix for the LAPTOP ONLY. Do not use on the Jetson.
+
+  The laptop is wired to Motive (10.0.0.5) and on the robot router
+  (192.168.0.4). Fast DDS announces a participant on every interface it can
+  see, so the Jetson gets handed a 10.0.0.x locator it cannot route to. This
+  whitelist restricts UDP to the robot-router address.
+
+  The SHM transport descriptor is REQUIRED. useBuiltinTransports=false removes
+  shared memory along with the unrestricted UDP, and without it declared here
+  the laptop loses discovery with its OWN processes -- which presents as the
+  stream being dead everywhere. That was the 2026-08-12 failure.
+
+      export FASTRTPS_DEFAULT_PROFILES_FILE=<repo>/scripts/fastdds_wifi_only.xml
+      ros2 daemon stop
+      # restart the VRPN client IN THIS SHELL -- a running node will not pick it up
+
+  <address> is the laptop's own robot-router IP. Check `ip -brief addr` and
+  update if DHCP moved it; a stale address gives
+  "[TRANSPORT Error] All whitelist interfaces were filtered out" and that shell
+  then has no transport at all.
+-->
+<dds xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <profiles>
+    <transport_descriptors>
+      <transport_descriptor>
+        <transport_id>wifi_only</transport_id>
+        <type>UDPv4</type>
+        <interfaceWhiteList>
+          <address>192.168.0.4</address>
+        </interfaceWhiteList>
+      </transport_descriptor>
+      <transport_descriptor>
+        <transport_id>shm</transport_id>
+        <type>SHM</type>
+      </transport_descriptor>
+    </transport_descriptors>
+    <participant profile_name="wifi_participant" is_default_profile="true">
+      <rtps>
+        <userTransports>
+          <transport_id>shm</transport_id>
+          <transport_id>wifi_only</transport_id>
+        </userTransports>
+        <useBuiltinTransports>false</useBuiltinTransports>
+      </rtps>
+    </participant>
+  </profiles>
+</dds>

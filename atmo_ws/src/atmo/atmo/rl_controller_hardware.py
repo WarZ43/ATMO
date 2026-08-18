@@ -1,6 +1,7 @@
 """ROS 2 hardware policy, fixed-action, and observation-shadow node."""
 
 import json
+import math
 import os
 import time
 from pathlib import Path
@@ -8,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import rclpy
 from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Odometry
 from rclpy.clock import Clock
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
@@ -25,12 +27,16 @@ from px4_msgs.msg import (
     VehicleOdometry,
     VehicleStatus,
 )
+from atmo.policy_contract import DeploymentContract, find_contract
+from atmo import px4_topics
+from atmo.roboclaw_safety import kill_engaged
 from atmo.rl_combined_runtime import (
     CombinedObservationBuilder,
     CombinedStage1Config,
     LandingActionAdapter,
     PolicyRunner,
 )
+from atmo.rl_landing_stage1_runtime import quat_wxyz_to_rotmat
 
 
 QUEUE_SIZE = int(os.getenv("ATMO_RL_QUEUE_SIZE", "10"))
@@ -38,14 +44,134 @@ RC_MAX = int(os.getenv("ATMO_RL_RC_MAX", "1934"))
 RC_MARGIN = int(os.getenv("ATMO_RL_RC_MARGIN", "100"))
 OFFBOARD_CHANNEL = int(os.getenv("ATMO_RL_OFFBOARD_CHANNEL", "8"))
 RL_CHANNEL = int(os.getenv("ATMO_RL_CHANNEL", "7"))
+# These are 0-BASED INDICES into InputRc.values, not 1-based channel numbers.
+# The distinction has bitten this project once already: the CATMO tree on the
+# vehicle stores 1-based numbers and subtracts one at every use
+# (`msg.values[offboard_channel - 1]`), so its `offboard_channel = 8` and this
+# module's `OFFBOARD_CHANNEL = 8` name channels one apart. Carlo's 8 is ch8,
+# index 7. This module's 8 is ch9, index 8. Do not "fix" one to match the
+# other without checking which convention the file you are editing uses.
+#
+# Set ATMO_RL_OFFBOARD_CHANNEL to -1 on airframes that have only ONE gate
+# switch. Measured on this vehicle 2026-08-14: the transmitter is a T14SG
+# carrying exactly two mapped switches -- kill (ch13, mirrored to ch17) and
+# one free switch on ch8 -- while the channel map it inherited was written for
+# a T18SZ. There is no second switch to gate on, and ch9 has never had one.
+OFFBOARD_GATE_ENABLED = OFFBOARD_CHANNEL >= 0
 ODOMETRY_TIMEOUT_S = 0.5
-VALID_MODES = {"policy", "action_test", "sensor_test", "shadow"}
+# The RC gates are a deadman: they expire rather than latching at the last
+# value seen, and an implausible pulse width reads as LOW, not as a switch
+# position. PX4's kill covers the rotors; only this covers tilt and drive.
+RC_TIMEOUT_S = float(os.getenv("ATMO_RL_RC_TIMEOUT_S", "0.5"))
+RC_PLAUSIBLE_MIN_US = int(os.getenv("ATMO_RL_RC_PLAUSIBLE_MIN_US", "900"))
+# "ground" is the policy loop with the ROTORS CUT: the policy runs closed loop
+# on tilt and the wheels, and nothing is ever published to actuator_motors, PX4
+# is never switched to offboard, and the vehicle is never armed. It is the
+# ground half of a policy run -- everything except the parts that could fly it,
+# and it needs no mocap because the reference is synthetic.
+#
+# It exists as its own mode rather than a flag on "policy" so that reaching
+# rotors requires typing a different word, not clearing a flag.
+VALID_MODES = {"policy", "ground", "action_test", "sensor_test", "shadow"}
+# Modes that run the policy pipeline and actuate.
+POLICY_MODES = {"policy", "ground"}
+# Replace PX4's position/velocity with a stationary origin. Defaults ON for
+# ground mode, because ground runs without mocap or GPS and PX4's EKF then
+# drifts without bound while still reporting finite numbers. Never defaults on
+# for `policy`: flying on a fabricated position is not a degraded run, it is a
+# crash. Force either way with ATMO_RL_VIRTUAL_POSE=1/0.
+_MODE = os.getenv("ATMO_RL_HARDWARE_MODE", "policy").strip().lower()
+VIRTUAL_POSE = os.getenv("ATMO_RL_VIRTUAL_POSE",
+                         "1" if _MODE == "ground" else "0").lower() in {"1", "true", "yes", "on"}
+# Where the vehicle's POSITION comes from.
+#
+#   mocap  -- straight from the mocap pose, bypassing PX4's estimator entirely
+#   px4    -- PX4's EKF via vehicle_odometry
+#   (virtual pose, above, is the no-reference fallback)
+#
+# Direct mocap is preferred over letting the EKF fuse it. Measured here
+# 2026-08-14: GPS denied and unfused, the EKF reported (-4428, -699, -72) m
+# and 24 m/s while the vehicle sat still, and those values are FINITE so
+# nothing downstream rejects them. Fusing mocap should fix that, but it puts
+# an estimator with its own failure modes, its own convergence time and its
+# own frame conventions between the measurement and the policy. The mocap IS
+# the measurement; read it.
+POSE_SOURCE = os.getenv("ATMO_RL_POSE_SOURCE", "px4").strip().lower()
+if POSE_SOURCE not in {"px4", "mocap"}:
+    raise ValueError("ATMO_RL_POSE_SOURCE must be 'px4' or 'mocap'")
+# Consume the BRIDGE's odometry, not the raw VRPN pose. mocap_bridge.py exists
+# for exactly this ("anything that wants mocap without going through the EKF
+# reads this"): it resolves the y-up/z-up frame question in one place, filters
+# a real velocity instead of leaving it to be differentiated here, and reports
+# rate and dropouts. Subscribing to the raw pose would duplicate all three and
+# put the frame convention in two places that can disagree.
+MOCAP_ODOM_TOPIC = os.getenv("ATMO_RL_MOCAP_ODOM_TOPIC", "/atmo/groundtruth_odom")
+# Ideal skid-steer constants for the virtual odometry. Yaw is damped for the
+# same reason the m4 node damps it: an undamped ideal yaw response lets the
+# policy unwind a heading error instantly, which is less informative than a
+# loop that has to work at it.
+VIRTUAL_MAX_SPEED = float(os.getenv("ATMO_RL_VIRTUAL_MAX_SPEED", "1.0"))        # m/s at drive=1
+VIRTUAL_MAX_YAW_RATE = float(os.getenv("ATMO_RL_VIRTUAL_MAX_YAW_RATE", "1.5"))  # rad/s at turn=1
+VIRTUAL_YAW_DAMPING = float(os.getenv("ATMO_RL_VIRTUAL_YAW_DAMPING", "0.1"))
+VIRTUAL_GROUND_Z = float(os.getenv("ATMO_RL_VIRTUAL_GROUND_Z", "0.0"))
 ACTION_NAMES = ("lift", "roll", "pitch", "yaw", "tilt", "drive", "turn")
 ROTOR_ACTIONS = {"lift", "roll", "pitch", "yaw"}
+# Bench convenience for NON-ROTOR action tests only: skip the RL-switch
+# ratchet and run as soon as RC is live with the kill released. The kill
+# switch and every fail-closed RC path still stop the test instantly --
+# autostart removes the START choreography, never the STOP. Rotor tests
+# ignore this flag unconditionally.
+ACTION_AUTOSTART = os.getenv("ATMO_RL_ACTION_AUTOSTART", "0").lower() in (
+    "1", "true", "yes", "on")
 
 
 class RLCombinedHardware(Node):
     """Run or inspect the deployment path on the companion computer."""
+
+    def _check_contract(self):
+        """Cross-check the runtime config against the exported training contract.
+
+        A policy run on a mismatched observation layout is not a degraded run,
+        it is a meaningless one: the network reads whatever happens to be at
+        each index. Shadow and the test modes are still informative with a
+        mismatch, so they warn and continue; `policy` refuses.
+
+        Set ATMO_RL_SKIP_CONTRACT_CHECK=1 to override, which should only ever
+        be a deliberate bench decision.
+        """
+        path = find_contract()
+        if path is None:
+            self.get_logger().warn(
+                "No deployment contract found. Export one from the training "
+                "machine with M4/export_atmo_deployment_contract.py and set "
+                "ATMO_RL_CONTRACT. Running unchecked."
+            )
+            return
+        try:
+            contract = DeploymentContract.load(path)
+        except Exception as exc:
+            self.get_logger().error("Contract at %s is invalid: %s" % (path, exc))
+            if self.mode in POLICY_MODES:
+                raise
+            return
+        self.get_logger().info("Contract: %s" % contract.describe())
+        problems = contract.check_runtime(self.cfg)
+        if not problems:
+            self.get_logger().info("Runtime agrees with the contract.")
+            return
+        message = "Runtime DISAGREES with the contract:\n    " + "\n    ".join(problems)
+        skip = os.getenv("ATMO_RL_SKIP_CONTRACT_CHECK", "0").lower() in {
+            "1", "true", "yes", "on"
+        }
+        if self.mode in POLICY_MODES and not skip:
+            raise RuntimeError(
+                message
+                + "\n\nRefusing to run a closed-loop policy against a mismatched "
+                "observation layout. Re-export the contract if training moved, "
+                "or fix the runtime config. Override with "
+                "ATMO_RL_SKIP_CONTRACT_CHECK=1 only as a deliberate bench decision."
+            )
+        self.get_logger().warn(message)
 
     def __init__(self):
         super().__init__("rl_combined_hardware")
@@ -56,8 +182,8 @@ class RLCombinedHardware(Node):
                 f"ATMO_RL_HARDWARE_MODE must be one of {sorted(VALID_MODES)}, got {self.mode!r}"
             )
         self.route = os.getenv("ATMO_RL_ROUTE", "landing").strip().lower()
-        if self.route not in {"takeoff", "landing"}:
-            raise ValueError("ATMO_RL_ROUTE must be 'takeoff' or 'landing'")
+        if self.route not in {"takeoff", "landing", "full"}:
+            raise ValueError("ATMO_RL_ROUTE must be 'takeoff', 'landing' or 'full'")
         os.environ["ATMO_RL_ROUTE"] = self.route
         self.cfg = CombinedStage1Config(
             randomize_reset=False,
@@ -67,6 +193,15 @@ class RLCombinedHardware(Node):
         self.adapter = LandingActionAdapter(self.cfg)
         self.observations = CombinedObservationBuilder(self.cfg)
         self.test_action = None
+        self._virtual_pose_announced = False
+        self._mocap_pose_announced = False
+        self._mocap_last_position = np.zeros(3, dtype=np.float64)
+        self._mocap_velocity = np.zeros(3, dtype=np.float64)
+        self._mocap_last_time = 0.0
+        self._mocap_have_previous = False
+        self._virtual_position = np.zeros(3, dtype=np.float64)
+        self._virtual_yaw = 0.0
+        self._virtual_last_time = 0.0
         self.action_test = os.getenv("ATMO_RL_ACTION_TEST", "lift").strip().lower()
         self.action_test_duration = float(os.getenv("ATMO_RL_ACTION_TEST_DURATION", "5.0"))
         kill_test_passed = os.getenv("ATMO_RL_KILL_TEST_PASSED", "0").lower() in {
@@ -104,18 +239,37 @@ class RLCombinedHardware(Node):
             else:
                 self.test_action[ACTION_NAMES.index(self.action_test)] = value
 
+        self._check_contract()
+
         self.policy = None
         self.policy_loaded = False
-        if self.mode in {"policy", "shadow"}:
+        # Ground runs the policy for real, so it must load it. Missing this
+        # left self.policy as None while the POLICY_MODES branches below
+        # dereferenced it, and the node died in __init__ with an
+        # AttributeError before it ever reached spin().
+        if self.mode in POLICY_MODES | {"shadow"}:
             self.policy = PolicyRunner(self.cfg)
             self.policy_loaded = self.policy.load()
+            if self.policy_loaded and getattr(self.policy, "numpy_actor", None):
+                # Log the provenance of the export so a stale .npz is
+                # identifiable at the bench rather than trusted by filename.
+                self.get_logger().info(self.policy.numpy_actor.describe())
+            warning = getattr(self.policy, "warning", None)
+            if warning:
+                self.get_logger().error(warning)
+                if self.mode in POLICY_MODES:
+                    raise RuntimeError(warning)
 
         if self.policy_loaded:
             self.get_logger().info(f"Loaded RL policy from {self.cfg.policy_path}")
-        elif self.mode == "policy":
+        elif self.mode in POLICY_MODES:
+            # self.policy can still be None if a mode reaches here without
+            # constructing one; report that plainly rather than raising an
+            # AttributeError out of __init__.
+            error = getattr(self.policy, "error", "no policy runner was created")
             self.get_logger().warn(
-                f"RL policy is not active: {self.policy.error}. "
-                "Drop the .pth at that path or set ATMO_RL_POLICY_PATH."
+                f"RL policy is not active: {error}. "
+                "Drop the .npz at that path or set ATMO_RL_POLICY_PATH."
             )
         self.get_logger().info(
             "ATMO RL hardware config: "
@@ -124,7 +278,12 @@ class RLCombinedHardware(Node):
             f"obs_dim={self.cfg.observation_dim}, action_dim={self.cfg.action_dim}, "
             f"motor_alpha={self.adapter.motor_alpha:.3f}"
         )
-        if self.route == "takeoff":
+        if self.route == "full":
+            self.get_logger().info(
+                "Combined hardware trajectory: DRIVE hold, TAKEOFF rise 1.0 m, "
+                "FLIGHT hover, LANDING back to the anchored ground z, then DRIVE hold"
+            )
+        elif self.route == "takeoff":
             self.get_logger().info(
                 "Combined hardware trajectory: DRIVE hold, TAKEOFF rise 1.0 m, then FLIGHT hold"
             )
@@ -156,14 +315,18 @@ class RLCombinedHardware(Node):
         self.manual_override_publisher = None
         if self.mode not in {"shadow", "sensor_test"}:
             self.vehicle_command_publisher = self.create_publisher(
-                VehicleCommand, "/fmu/in/vehicle_command", QUEUE_SIZE
+                VehicleCommand, px4_topics.topic("vehicle_command"), QUEUE_SIZE
             )
             self.offboard_control_mode_publisher = self.create_publisher(
-                OffboardControlMode, "/fmu/in/offboard_control_mode", QUEUE_SIZE
+                OffboardControlMode, px4_topics.topic("offboard_control_mode"), QUEUE_SIZE
             )
-            self.actuator_motors_publisher = self.create_publisher(
-                ActuatorMotors, "/fmu/in/actuator_motors", QUEUE_SIZE
-            )
+            if self.mode != "ground":
+                # Ground mode never creates the rotor publisher at all. Cutting
+                # it here rather than declining to publish means no later code
+                # path, and no bug in one, can reach the rotors.
+                self.actuator_motors_publisher = self.create_publisher(
+                    ActuatorMotors, px4_topics.topic("actuator_motors"), QUEUE_SIZE
+                )
             self.tilt_vel_publisher = self.create_publisher(TiltVel, "/tilt_vel", QUEUE_SIZE)
             self.drive_vel_publisher = self.create_publisher(DriveVel, "/drive_vel", QUEUE_SIZE)
             self.manual_override_publisher = self.create_publisher(
@@ -172,52 +335,65 @@ class RLCombinedHardware(Node):
 
         self.create_subscription(
             InputRc,
-            "/fmu/out/input_rc",
+            px4_topics.resolve(self, "input_rc"),
             self.rc_listener_callback,
             qos_profile_sensor_data,
         )
         self.create_subscription(
             PoseStamped,
-            "/vrpn_mocap/m4_base/pose",
+            os.getenv("ATMO_MOCAP_POSE_TOPIC", "/vrpn_mocap/M4/pose"),
             self.mocap_callback,
+            qos_profile_sensor_data,
+        )
+        # mocap_bridge's odometry. This is the pose source when
+        # ATMO_RL_POSE_SOURCE=mocap; the raw pose above is logged only.
+        self.create_subscription(
+            Odometry,
+            MOCAP_ODOM_TOPIC,
+            self.mocap_odom_callback,
             qos_profile_sensor_data,
         )
         self.create_subscription(
             VehicleOdometry,
-            "/fmu/in/vehicle_visual_odometry",
+            px4_topics.resolve(self, "vehicle_visual_odometry"),
             self.visual_odometry_callback,
             qos_profile_sensor_data,
         )
         self.create_subscription(
             VehicleOdometry,
-            "/fmu/out/vehicle_odometry",
+            px4_topics.resolve(self, "vehicle_odometry"),
             self.vehicle_odometry_callback,
             qos_profile_sensor_data,
         )
         self.create_subscription(
             TiltAngle,
-            "/fmu/in/tilt_angle",
+            px4_topics.resolve(self, "tilt_angle"),
             self.tilt_angle_callback,
             qos_profile_sensor_data,
         )
         self.create_subscription(
             VehicleCommandAck,
-            "/fmu/out/vehicle_command_ack",
+            px4_topics.resolve(self, "vehicle_command_ack"),
             self.vehicle_command_ack_callback,
             qos_profile_sensor_data,
         )
         self.create_subscription(
             VehicleControlMode,
-            "/fmu/out/vehicle_control_mode",
+            px4_topics.resolve(self, "vehicle_control_mode"),
             self.vehicle_control_mode_callback,
             qos_profile_sensor_data,
         )
         self.create_subscription(
             VehicleStatus,
-            "/fmu/out/vehicle_status",
+            px4_topics.resolve(self, "vehicle_status"),
             self.vehicle_status_callback,
             qos_profile_sensor_data,
         )
+
+        px4_topics.warn_missing(self, (
+            "input_rc", "vehicle_odometry", "vehicle_status",
+            "vehicle_control_mode", "vehicle_command_ack",
+        ))
 
         self.offboard_switch = False
         self.rl_switch = False
@@ -233,7 +409,22 @@ class RLCombinedHardware(Node):
         self.last_odometry_time = 0.0
         self.sensor_times = {}
         self.sensor_counts = {}
-        self.test_phase = "waiting_low"
+        self.rc_deadman_ok = False
+        self.autostart = (
+            ACTION_AUTOSTART
+            and self.mode == "action_test"
+            and self.action_test not in ROTOR_ACTIONS
+        )
+        if ACTION_AUTOSTART and self.action_test in ROTOR_ACTIONS:
+            self.get_logger().warn(
+                "ATMO_RL_ACTION_AUTOSTART ignored: rotor tests keep the ratchet"
+            )
+        self.test_phase = "ready" if self.autostart else "waiting_low"
+        if self.autostart:
+            self.get_logger().warn(
+                "ACTION AUTOSTART: runs as soon as RC is live and the kill is "
+                "released. Kill switch stops it."
+            )
         self.test_started_at = 0.0
         self.last_warn_time = 0.0
         self.last_sample_log_time = 0.0
@@ -274,6 +465,9 @@ class RLCombinedHardware(Node):
                 )
 
         self.timer = self.create_timer(self.cfg.publish_dt, self.timer_callback)
+        # Runs regardless of mode: even shadow and the test modes decide what
+        # they are allowed to do from these gates.
+        self.rc_watchdog_timer = self.create_timer(0.1, self._rc_watchdog)
 
     def timer_callback(self):
         if self.mode == "sensor_test":
@@ -287,17 +481,17 @@ class RLCombinedHardware(Node):
             return
 
         if self.handoff_latched:
-            if not self.offboard_switch and not self.rl_switch:
+            if self.gates_released:
                 self._clear_terminal_latch()
             else:
                 self._terminal_handoff_timer()
             return
 
-        requested = self.offboard_switch and self.rl_switch
+        requested = self.gates_requested
         if not requested:
             self._leave_rl_idle()
             return
-        if self.mode == "policy" and not self.policy_loaded:
+        if self.mode in POLICY_MODES and not self.policy_loaded:
             self._warn_missing_policy()
             return
         if not self.observations.state_seen:
@@ -306,6 +500,20 @@ class RLCombinedHardware(Node):
         if time.monotonic() - self.last_odometry_time > ODOMETRY_TIMEOUT_S:
             self._warn_waiting_for_state("PX4 odometry is stale; RL remains inactive")
             self._leave_rl_idle()
+            return
+
+        # GROUND MODE: never touch PX4. No offboard, no arming, no rotor
+        # publication -- the rotors are cut at the source rather than zeroed,
+        # so a bug in the policy output cannot reach them.
+        if self.mode == "ground":
+            if not self.rl_active:
+                self._start_policy_session()
+            self._publish_manual_override(False)
+            self._update_command_if_due()
+            if self.handoff_latched:
+                self._terminal_handoff_timer()
+                return
+            self._publish_policy_command(include_rotors=False)
             return
 
         self._switch_to_offboard()
@@ -320,11 +528,7 @@ class RLCombinedHardware(Node):
         if self.handoff_latched:
             self._terminal_handoff_timer()
             return
-        self._publish_actuator_motors(self.adapter.last_command.rotors)
-        self._publish_tilt_vel(self.adapter.last_command.tilt_velocity)
-        self._publish_drive_vel(
-            self.adapter.last_command.drive_speed, self.adapter.last_command.turn_speed
-        )
+        self._publish_policy_command(include_rotors=True)
 
     def _update_command_if_due(self):
         now = time.monotonic()
@@ -346,33 +550,98 @@ class RLCombinedHardware(Node):
         command = self.adapter.pre_physics_step(action)
         self.observations.set_tilt_angle(command.tilt_angle)
         self.observations.append_action(command.semantic_action)
-        if self.mode == "policy" and transition in {"takeoff_to_flight", "landing_to_drive"}:
+        # On the single routes the first completed leg is terminal. On the
+        # FULL route takeoff_to_flight is mid-mission (hover comes next) and
+        # only landing_to_drive ends it.
+        terminal = (
+            {"landing_to_drive"}
+            if self.route == "full"
+            else {"takeoff_to_flight", "landing_to_drive"}
+        )
+        if self.mode == "policy" and transition in terminal:
             self._begin_terminal_handoff(transition)
 
+    @property
+    def gates_requested(self):
+        """True when the operator is asking for output, under either scheme."""
+        if OFFBOARD_GATE_ENABLED:
+            return self.offboard_switch and self.rl_switch
+        return self.rl_switch
+
+    @property
+    def gates_released(self):
+        """True when every gate this airframe has is LOW."""
+        if OFFBOARD_GATE_ENABLED:
+            return not self.offboard_switch and not self.rl_switch
+        return not self.rl_switch
+
+    def _action_test_gates(self):
+        """Transition predicates for the action-test ratchet.
+
+        Two-gate airframes cycle the offboard and RL switches against each
+        other, so no single switch position can start a motor.
+
+        Airframes with only one gate switch (ATMO_RL_OFFBOARD_CHANNEL < 0)
+        cycle the RL switch TWICE instead -- low, high, low, high. That keeps
+        the property that actually matters: the sequence has to begin from
+        LOW, so a switch left HIGH when the node starts cannot run anything,
+        and a single flip is never enough.
+
+        What is deliberately NOT conditional on this: every fail-closed path.
+        rc_lost, rc_failsafe, implausible pulse width and the RC watchdog all
+        drop `rl_switch`, and `raised` is false whenever `rl_switch` is false
+        under either configuration. The deadman is unchanged.
+
+        Returns (raised, lowered, half, abort).
+        """
+        if self.autostart:
+            # Start condition is RC LIVENESS, not switch position; every
+            # fail-closed path drops rc_deadman_ok and ends the test.
+            ok = self.rc_deadman_ok
+            return (ok, not ok, False, not ok)
+        if OFFBOARD_GATE_ENABLED:
+            return (
+                self.offboard_switch and self.rl_switch,
+                not self.offboard_switch and not self.rl_switch,
+                self.offboard_switch and not self.rl_switch,
+                not self.offboard_switch,
+            )
+        return (self.rl_switch, not self.rl_switch, not self.rl_switch, False)
+
     def _action_test_timer(self):
-        both_high = self.offboard_switch and self.rl_switch
+        # Autostart has no switch choreography: any time RC liveness is up
+        # and the machine sits in a ratchet state (including after an early
+        # abort while RC was still coming up), jump straight to ready.
+        if (
+            self.autostart
+            and self.rc_deadman_ok
+            and self.test_phase in ("waiting_low", "waiting_prepare", "waiting_trigger")
+        ):
+            self.test_phase = "ready"
+        raised, lowered, half, abort = self._action_test_gates()
+        both_high = raised
         if self.test_phase == "waiting_low":
             self._publish_safe_output()
-            if not self.offboard_switch and not self.rl_switch:
+            if lowered:
                 self.test_phase = "waiting_prepare"
         elif self.test_phase == "waiting_prepare":
             self._publish_safe_output()
-            if both_high:
+            if raised:
                 self.test_phase = "waiting_trigger"
-                self.get_logger().warn("Action test prepared; lower only the RL switch")
+                self.get_logger().warn("Action test prepared; lower the RL switch")
         elif self.test_phase == "waiting_trigger":
             self._publish_safe_output()
-            if self.offboard_switch and not self.rl_switch:
+            if half:
                 self.test_phase = "ready"
                 self.get_logger().warn("Action test ready; raise the RL switch to apply output")
-            elif not self.offboard_switch:
+            elif abort:
                 self.test_phase = "waiting_low"
         elif self.test_phase == "ready":
             self._publish_safe_output()
-            if both_high:
+            if raised:
                 self.test_phase = "starting" if self.action_test in ROTOR_ACTIONS else "running"
                 self.test_started_at = time.monotonic()
-            elif not self.offboard_switch:
+            elif abort:
                 self.test_phase = "waiting_low"
         elif self.test_phase == "starting":
             if not both_high:
@@ -406,7 +675,7 @@ class RLCombinedHardware(Node):
                 self._log_action_test(command)
         else:
             self._publish_safe_output()
-            if not self.offboard_switch and not self.rl_switch:
+            if lowered:
                 self.test_phase = "waiting_prepare"
 
     def _finish_action_test(self, reason):
@@ -681,6 +950,18 @@ class RLCombinedHardware(Node):
         msg.timestamp = self._timestamp_us()
         self.actuator_motors_publisher.publish(msg)
 
+    def _publish_policy_command(self, include_rotors: bool) -> None:
+        command = self.adapter.last_command
+        if include_rotors:
+            rotor_gate = self.observations.rotor_thrust_gate()
+            self._publish_actuator_motors(command.rotors * rotor_gate)
+        wheel_gate = self.observations.wheel_speed_gate()
+        self._publish_tilt_vel(command.tilt_velocity)
+        self._publish_drive_vel(
+            command.drive_speed * wheel_gate,
+            command.turn_speed * wheel_gate,
+        )
+
     def _publish_tilt_vel(self, tilt_vel):
         msg = TiltVel()
         max_tilt_velocity = max(float(self.cfg.max_tilt_velocity), 1e-6)
@@ -747,16 +1028,151 @@ class RLCombinedHardware(Node):
     def _timestamp_us(self):
         return int(Clock().now().nanoseconds / 1000)
 
+    def _virtual_odometry(self):
+        """Dead-reckon a pose from the commands we are issuing.
+
+        A FROZEN pose is not good enough for anything that drives. The m4
+        bring-up measured this directly (2026-08-13): a policy commanding
+        wheels into a world that never moves sees no yaw response and winds
+        its yaw differential to the rail. The loop has to close, even if only
+        in software.
+
+        So integrate an ideal no-slip skid-steer from the drive and turn
+        commands the adapter last produced:
+
+            v       = drive_speed * VIRTUAL_MAX_SPEED
+            yaw_dot = turn_speed  * VIRTUAL_MAX_YAW_RATE * VIRTUAL_YAW_DAMPING
+
+        Yaw is deliberately damped, as in the m4 node: command a differential
+        and the yaw unwinds at a fraction of the ideal rate, which keeps the
+        loop stable without pretending the kinematics are real.
+
+        THE KINEMATICS HERE ARE IDEAL. No slip, no friction, no lag. A stable
+        run says the policy, reference, observation packing and wheel mapping
+        close a loop. It says NOTHING about ground dynamics.
+
+        DO NOT RUN THIS WITH THE WHEELS ON THE FLOOR. The vehicle would really
+        move while this reports the ideal pose, and the two diverge from the
+        first step.
+        """
+        now = time.monotonic()
+        dt = now - self._virtual_last_time if self._virtual_last_time else 0.0
+        self._virtual_last_time = now
+        # Clamp dt so a stall cannot teleport the virtual vehicle.
+        dt = min(max(dt, 0.0), 0.1)
+
+        command = getattr(self.adapter, "last_command", None)
+        drive = float(getattr(command, "drive_speed", 0.0) or 0.0)
+        turn = float(getattr(command, "turn_speed", 0.0) or 0.0)
+
+        v = drive * VIRTUAL_MAX_SPEED
+        yaw_rate = turn * VIRTUAL_MAX_YAW_RATE * VIRTUAL_YAW_DAMPING
+        self._virtual_yaw += yaw_rate * dt
+        self._virtual_position[0] += v * math.cos(self._virtual_yaw) * dt
+        self._virtual_position[1] += v * math.sin(self._virtual_yaw) * dt
+        # Ground running: altitude is whatever the vehicle is sitting at.
+        self._virtual_position[2] = VIRTUAL_GROUND_Z
+        velocity = np.array(
+            (v * math.cos(self._virtual_yaw), v * math.sin(self._virtual_yaw), 0.0),
+            dtype=np.float64,
+        )
+        return self._virtual_position.copy(), velocity
+
+    def emergency_stop(self, reason):
+        """Command zero everywhere, as fast and as often as possible.
+
+        Called on Ctrl-C, on shutdown, and whenever the kill switch engages.
+        Publishes repeatedly because a single message can be lost and a
+        RoboClaw holds its last command forever -- a dropped zero is a motor
+        that never stops. Everything here is guarded: this must run to the end
+        even if half the node is already torn down.
+        """
+        try:
+            self.get_logger().error("EMERGENCY STOP (%s): commanding zero" % reason)
+        except Exception:  # noqa: BLE001
+            pass
+        self.offboard_switch = False
+        self.rl_switch = False
+        self.rl_active = False
+        for _ in range(3):
+            for publish in (
+                lambda: self._publish_tilt_vel(0.0),
+                lambda: self._publish_drive_vel(0.0, 0.0),
+                lambda: self._publish_manual_override(True),
+            ):
+                try:
+                    publish()
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                if self.actuator_motors_publisher is not None and self.px4_offboard:
+                    self._publish_actuator_motors(np.zeros(4, dtype=np.float32))
+            except Exception:  # noqa: BLE001
+                pass
+            time.sleep(0.02)
+
     def rc_listener_callback(self, msg):
         self._mark_sensor("rc")
         self.raw_rc_values = list(msg.values)
+        # PX4's kill cuts the ROTORS. It does not reach the tilt and drive
+        # RoboClaws at all, so it has to be carried across here: kill engaged
+        # means stop commanding them, immediately, in every mode.
+        if kill_engaged(msg.values, msg.rc_lost, msg.rc_failsafe):
+            if self.rl_switch or self.offboard_switch or self.rl_active:
+                self.emergency_stop("kill switch engaged")
+            self.offboard_switch = False
+            self.rl_switch = False
+            self.rc_deadman_ok = False
+            return
+        # Fail closed. These gates are a deadman, so anything meaning "we do
+        # not currently know where the switch is" must read LOW rather than
+        # leaving the last value we happened to see latched high.
+        if msg.rc_lost or msg.rc_failsafe:
+            if self.offboard_switch or self.rl_switch:
+                self.get_logger().warn(
+                    "RC lost/failsafe reported by PX4; dropping both gates"
+                )
+            self.offboard_switch = False
+            self.rl_switch = False
+            self.rc_deadman_ok = False
+            return
         self.offboard_switch = self._channel_high(msg, OFFBOARD_CHANNEL)
         self.rl_switch = self._channel_high(msg, RL_CHANNEL)
+        self.rc_deadman_ok = True
 
     def _channel_high(self, msg, channel):
         if channel < 0 or channel >= len(msg.values):
             return False
-        return int(msg.values[channel]) >= RC_MAX - RC_MARGIN
+        value = int(msg.values[channel])
+        # A channel reading below any plausible pulse width is a dead or
+        # unmapped channel, not a switch position. Treat it as LOW.
+        if value < RC_PLAUSIBLE_MIN_US:
+            return False
+        return value >= RC_MAX - RC_MARGIN
+
+    def _rc_watchdog(self):
+        """Expire the gates when the RC stream stops.
+
+        Without this the switches keep whatever value arrived last, so pulling
+        the transmitter's power leaves the companion believing both gates are
+        still raised. PX4's own kill is independent and covers the rotors, but
+        NOT the tilt and drive RoboClaws -- those are commanded only from here,
+        so this is the only thing that stops them on RC loss.
+        """
+        stamp = self.sensor_times.get("rc")
+        if stamp is None:
+            return
+        if time.monotonic() - stamp <= RC_TIMEOUT_S:
+            return
+        if self.offboard_switch or self.rl_switch:
+            self.get_logger().error(
+                "No RC for %.1f s; dropping both gates" % RC_TIMEOUT_S
+            )
+        self.offboard_switch = False
+        self.rl_switch = False
+        # Autostart liveness expires with the stream too -- a dead agent must
+        # stop an autostarted test exactly like a dead transmitter does.
+        self.rc_deadman_ok = False
 
     def vehicle_odometry_callback(self, msg):
         self._mark_sensor("px4_odometry")
@@ -767,19 +1183,58 @@ class RLCombinedHardware(Node):
         if not np.all(np.isfinite(values)):
             self._warn_waiting_for_state("Ignoring non-finite PX4 odometry")
             return
-        self.raw_px4_position[:] = msg.position
+        self.raw_px4_angular_velocity[:] = msg.angular_velocity
+        if POSE_SOURCE == "mocap":
+            # Mocap owns the state. Keep the gyro (read above) and drop the
+            # rest -- letting the EKF also write here would race the mocap.
+            return
+        position = np.asarray(msg.position, dtype=np.float64)
+        velocity = np.asarray(msg.velocity, dtype=np.float64)
+        if VIRTUAL_POSE:
+            position, velocity = self._virtual_odometry()
+            # Ground running with no position reference. PX4's EKF has GPS
+            # denied and no mocap, so it drifts without bound -- measured on
+            # this vehicle 2026-08-14, stationary on the bench: position
+            # (-4428, -699, -72) m and velocity 24 m/s. Those are FINITE, so
+            # nothing upstream rejects them, and they would go straight into
+            # the observation and out as wheel and tilt commands.
+            #
+            # Attitude and angular velocity come from the IMU and are sound,
+            # so keep them. Substitute a stationary origin for the two
+            # channels the EKF cannot know, which is the honest statement of
+            # what is actually observable here.
+            if not self._virtual_pose_announced:
+                self._virtual_pose_announced = True
+                self.get_logger().warn(
+                    "VIRTUAL ODOMETRY ACTIVE: PX4 position/velocity replaced "
+                    "with an ideal dead-reckoned skid-steer from the commands "
+                    "being issued. Attitude is still real. Kinematics are "
+                    "IDEAL -- no slip, no friction. This validates that the "
+                    "loop closes, NOT ground dynamics. DO NOT RUN WITH THE "
+                    "WHEELS ON THE FLOOR: the vehicle would really move while "
+                    "this reports the ideal pose, and they diverge at once."
+                )
+        self.raw_px4_position[:] = position
         self.raw_px4_quaternion[:] = msg.q
-        self.raw_px4_velocity[:] = msg.velocity
+        self.raw_px4_velocity[:] = velocity
         self.raw_px4_angular_velocity[:] = msg.angular_velocity
         self.observations.update_px4_state(
-            msg.position,
+            position,
             msg.q,
-            msg.velocity,
+            velocity,
             msg.angular_velocity,
         )
         self.last_odometry_time = time.monotonic()
 
     def mocap_callback(self, msg):
+        """Raw VRPN pose. Recorded for the log; NOT the pose source.
+
+        With POSE_SOURCE=mocap the state comes from mocap_bridge's odometry
+        (see mocap_odom_callback). This stays so the raw stream is still in
+        the rosbag alongside the bridge's interpretation of it -- when a frame
+        convention turns out to be wrong, the difference between these two is
+        what tells you.
+        """
         values = np.asarray(
             (
                 msg.pose.position.x,
@@ -795,6 +1250,42 @@ class RLCombinedHardware(Node):
         if np.all(np.isfinite(values)):
             self.raw_mocap_pose[:] = values
             self._mark_sensor("mocap")
+
+    def mocap_odom_callback(self, msg):
+        """mocap_bridge odometry -> the observation, with no EKF in between."""
+        if POSE_SOURCE != "mocap":
+            return
+        p = msg.pose.pose.position
+        q = msg.pose.pose.orientation
+        position = np.array((p.x, p.y, p.z), dtype=np.float64)
+        quaternion = np.array((q.w, q.x, q.y, q.z), dtype=np.float64)
+        # The bridge publishes twist in the BODY frame (matching the Gazebo
+        # convention); the observation wants world. Rotate it rather than
+        # assuming they agree -- this is exactly the class of mismatch that
+        # produced the m4 hip-frame inversion.
+        linear_body = np.array(
+            (msg.twist.twist.linear.x, msg.twist.twist.linear.y, msg.twist.twist.linear.z),
+            dtype=np.float64)
+        angular_body = np.array(
+            (msg.twist.twist.angular.x, msg.twist.twist.angular.y, msg.twist.twist.angular.z),
+            dtype=np.float64)
+        if not (np.all(np.isfinite(position)) and np.all(np.isfinite(quaternion))
+                and np.all(np.isfinite(linear_body))):
+            self._warn_waiting_for_state("Ignoring non-finite mocap odometry")
+            return
+        velocity_world = quat_wxyz_to_rotmat(quaternion) @ linear_body
+
+        self.observations.update_px4_state(
+            position, quaternion, velocity_world, angular_body)
+        self.last_odometry_time = time.monotonic()
+        self._mark_sensor("mocap_odom")
+        if not self._mocap_pose_announced:
+            self._mocap_pose_announced = True
+            self.get_logger().warn(
+                "POSE SOURCE = MOCAP: state comes from %s via mocap_bridge. "
+                "PX4's EKF is NOT in the loop. Frame conventions are the "
+                "bridge's -- verify them by moving the vehicle in each axis "
+                "before trusting a run." % MOCAP_ODOM_TOPIC)
 
     def visual_odometry_callback(self, msg):
         values = np.asarray((*msg.position, *msg.q), dtype=np.float64)
@@ -836,9 +1327,19 @@ class RLCombinedHardware(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = RLCombinedHardware()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+    # rclpy.spin() raises KeyboardInterrupt on Ctrl-C, and without this every
+    # line after it is skipped -- the node would die with the last non-zero
+    # tilt and drive command still in flight, and a RoboClaw latches its last
+    # command indefinitely. Stopping is not cleanup here; it is the stop.
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.emergency_stop("shutdown")
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

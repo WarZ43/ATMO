@@ -16,6 +16,15 @@ from typing import Any, Dict, Iterable, Optional, Tuple
 
 import numpy as np
 
+# Both of these are USED in PolicyRunner.load() and neither was imported, so
+# the .npz path raised NameError the first time anything actually loaded a
+# policy. It went unnoticed because no mode reached it until ground mode: the
+# only two modes that loaded a policy were `policy`, which was blocked by the
+# 528-vs-529 contract mismatch, and `shadow`, which had never been run against
+# a real .npz. The Jetson has no torch, so .npz is the ONLY deployment path --
+# this line is the whole policy pipeline on hardware.
+from atmo.numpy_actor import NumpyActor, is_numpy_archive
+
 try:
     import torch
     import torch.nn as nn
@@ -154,6 +163,41 @@ def _wrap_to_pi(angle: float) -> float:
     return math.atan2(math.sin(angle), math.cos(angle))
 
 
+def heading_yaw_from_quat(quat_wxyz: Iterable[float], forward_yaw_offset: float) -> float:
+    """Return the training policy's rolling-forward yaw in world coordinates."""
+    rotmat = quat_wxyz_to_rotmat(quat_wxyz)
+    yaw = math.atan2(float(rotmat[1, 0]), float(rotmat[0, 0]))
+    return yaw + float(forward_yaw_offset)
+
+
+def to_heading_frame(vector_world: Iterable[float], heading_yaw: float) -> np.ndarray:
+    """Rotate a world vector into the yaw-only heading frame used in training."""
+    vector = np.asarray(list(vector_world), dtype=np.float32)[:3]
+    cosine, sine = math.cos(heading_yaw), math.sin(heading_yaw)
+    return np.array(
+        (
+            cosine * vector[0] + sine * vector[1],
+            -sine * vector[0] + cosine * vector[1],
+            vector[2],
+        ),
+        dtype=np.float32,
+    )
+
+
+def rotation_matrix_to_heading_frame(matrix_world: np.ndarray, heading_yaw: float) -> np.ndarray:
+    """Strip world yaw from a body-to-world rotation, matching task_utils."""
+    matrix = np.asarray(matrix_world, dtype=np.float32).reshape(3, 3)
+    cosine, sine = math.cos(heading_yaw), math.sin(heading_yaw)
+    return np.array(
+        (
+            cosine * matrix[0, :] + sine * matrix[1, :],
+            -sine * matrix[0, :] + cosine * matrix[1, :],
+            matrix[2, :],
+        ),
+        dtype=np.float32,
+    )
+
+
 @dataclass
 class LandingStage1Config:
     policy_path: Path = _env_path("ATMO_RL_POLICY_PATH", DEFAULT_POLICY_PATH)
@@ -188,6 +232,7 @@ class LandingStage1Config:
     tilt_lower: float = 0.0
     tilt_upper: float = math.pi / 2.0
     wheel_effort_limit: float = 1.0
+    wheel_turn_scale: float = 0.5
     forward_yaw_offset: float = math.pi
     rotor_kT: float = 28.15
     rotor_kM: float = 0.018
@@ -317,10 +362,8 @@ class LandingActionAdapter:
             tilt_velocity = 0.0
             tilt_action = 0.0
         self.tilt_angle = float(np.clip(self.tilt_angle + tilt_velocity * self.cfg.policy_dt, self.cfg.tilt_lower, self.cfg.tilt_upper))
-        semantic[4] = tilt_action
-
         drive = float(raw[5])
-        turn = float(raw[6])
+        turn = float(self.cfg.wheel_turn_scale * raw[6])
         # Isaac joint order is [wheel1, wheel3, wheel2, wheel0]. Its
         # differential mix is [drive-turn, drive+turn, drive-turn, drive+turn];
         # the mirrored right-side axes invert wheel3/wheel0 in PX4 channel
@@ -337,7 +380,7 @@ class LandingActionAdapter:
             tilt_velocity=tilt_velocity,
             wheel_efforts=wheel_efforts,
             drive_speed=float(np.clip(-raw[5], -1.0, 1.0)),
-            turn_speed=float(np.clip(raw[6], -1.0, 1.0)),
+            turn_speed=float(np.clip(turn, -1.0, 1.0)),
             semantic_action=semantic,
             raw_action=raw,
         )
@@ -443,19 +486,33 @@ class LandingObservationBuilder:
         return (value + self.rng.uniform(-scale, scale, value.shape)).astype(np.float32)
 
     def _history_observation(self) -> np.ndarray:
-        rotmat = quat_wxyz_to_rotmat(self.quat_wxyz).reshape(-1)
+        heading_yaw = heading_yaw_from_quat(self.quat_wxyz, self.cfg.forward_yaw_offset)
+        rotmat = rotation_matrix_to_heading_frame(
+            quat_wxyz_to_rotmat(self.quat_wxyz), heading_yaw
+        ).reshape(-1)
         return np.concatenate((
-            self._noise(self.position + self.cfg.virtual_observation_offset, self.cfg.pos_noise_scale),
+            self._noise(
+                to_heading_frame(self.position + self.cfg.virtual_observation_offset, heading_yaw),
+                self.cfg.pos_noise_scale,
+            ),
             self._noise(rotmat, self.cfg.rot_noise_scale),
-            self._noise(self.linear_velocity, self.cfg.lin_vel_noise_scale),
-            self._noise(self.angular_velocity_w, self.cfg.ang_vel_noise_scale),
+            self._noise(
+                to_heading_frame(self.linear_velocity, heading_yaw),
+                self.cfg.lin_vel_noise_scale,
+            ),
+            self._noise(
+                to_heading_frame(self.angular_velocity_w, heading_yaw),
+                self.cfg.ang_vel_noise_scale,
+            ),
             self._noise(np.array((self.tilt_angle,), dtype=np.float32), self.cfg.tilt_noise_scale),
         )).astype(np.float32)
 
     def _current_observation(self) -> np.ndarray:
         reference_position, reference_velocity, reference_accel = self._reference_state()
-        pos_error = reference_position - self.position
-        velocity_error = reference_velocity - self.linear_velocity
+        heading_yaw = heading_yaw_from_quat(self.quat_wxyz, self.cfg.forward_yaw_offset)
+        pos_error = to_heading_frame(reference_position - self.position, heading_yaw)
+        velocity_error = to_heading_frame(reference_velocity - self.linear_velocity, heading_yaw)
+        reference_accel = to_heading_frame(reference_accel, heading_yaw)
         rotmat = quat_wxyz_to_rotmat(self.quat_wxyz)
         yaw = math.atan2(float(rotmat[1, 0]), float(rotmat[0, 0]))
         yaw_error = _wrap_to_pi(self.reference_heading - _wrap_to_pi(yaw + self.cfg.forward_yaw_offset))
@@ -654,14 +711,35 @@ class PolicyRunner:
         self.model = None
         self.obs_mean = None
         self.obs_var = None
+        self.numpy_actor = None
         self.error: Optional[str] = None
+        self.warning: Optional[str] = None
 
     def load(self) -> bool:
-        if torch is None:
-            self.error = "PyTorch is not installed"
-            return False
         if not self.cfg.policy_path.exists():
             self.error = f"policy file not found: {self.cfg.policy_path}"
+            return False
+        # A .npz export runs on numpy alone, which is the deployment path: the
+        # Jetson has no torch and does not need it for a four-layer MLP. See
+        # atmo/numpy_actor.py and scripts/export_policy_npz.py.
+        if is_numpy_archive(self.cfg.policy_path):
+            try:
+                self.numpy_actor = NumpyActor(
+                    self.cfg.policy_path,
+                    self.cfg.observation_dim,
+                    self.cfg.action_dim,
+                )
+                return True
+            except Exception as exc:
+                self.error = f"could not load numpy actor: {exc}"
+                self.numpy_actor = None
+                return False
+        if torch is None:
+            self.error = (
+                "PyTorch is not installed and the policy is not a .npz export. "
+                "Convert it with scripts/export_policy_npz.py on a machine that "
+                "has torch, then point ATMO_RL_POLICY_PATH at the .npz."
+            )
             return False
         try:
             self.model = torch.jit.load(str(self.cfg.policy_path), map_location=self.device).eval()
@@ -699,6 +777,16 @@ class PolicyRunner:
             if self.obs_mean is not None and self.obs_var is not None:
                 self.obs_mean = self.obs_mean.to(self.device).reshape(1, -1).float()
                 self.obs_var = self.obs_var.to(self.device).reshape(1, -1).float()
+            else:
+                # action() silently skips normalization when these are absent.
+                # The actor was trained with normalize_input, so that produces
+                # garbage that still looks like a working policy. Record it on
+                # the runner so the node can say so out loud.
+                self.warning = (
+                    "no observation normalizer found in %s -- the actor was "
+                    "trained behind RunningMeanStd, so inference WILL be wrong. "
+                    "Do not fly this." % self.cfg.policy_path
+                )
             return True
         except Exception as exc:
             self.error = f"could not load rl_games actor: {exc}"
@@ -706,6 +794,8 @@ class PolicyRunner:
             return False
 
     def action(self, observation: np.ndarray) -> Optional[np.ndarray]:
+        if self.numpy_actor is not None:
+            return self.numpy_actor(observation)
         if self.model is None or torch is None:
             return None
         obs = torch.as_tensor(observation, dtype=torch.float32, device=self.device).unsqueeze(0)

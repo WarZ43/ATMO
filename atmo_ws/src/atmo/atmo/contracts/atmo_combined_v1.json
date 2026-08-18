@@ -1,0 +1,148 @@
+{
+  "policy_name": "atmo_combined",
+  "policy_hz": 50.0,
+  "publish_hz": 143.0,
+  "observation_history_length": 15,
+  "action_history_length": 25,
+  "action_dim": 7,
+  "history_obs_dim": 19,
+  "current_obs_dim": 64,
+  "task_observation_dim": 5,
+  "task_observation": [
+    "drive",
+    "takeoff",
+    "flight",
+    "landing",
+    "phase_event_time_s"
+  ],
+  "observation_dim": 529,
+  "action_terms": [
+    {
+      "name": "lift",
+      "size": 1,
+      "low": -1.0,
+      "high": 1.0
+    },
+    {
+      "name": "roll_pitch_yaw",
+      "size": 3,
+      "low": -1.0,
+      "high": 1.0
+    },
+    {
+      "name": "tilt_mean",
+      "size": 1,
+      "low": -1.0,
+      "high": 1.0
+    },
+    {
+      "name": "wheel_speed",
+      "size": 2,
+      "low": -1.0,
+      "high": 1.0
+    }
+  ],
+  "history_observation_terms": [
+    {
+      "name": "root_pos",
+      "size": 3,
+      "source": "root_pos_local"
+    },
+    {
+      "name": "root_rotation_matrix",
+      "size": 9,
+      "source": "root_rotation_matrix"
+    },
+    {
+      "name": "root_lin_vel_w",
+      "size": 3,
+      "source": "root_lin_vel_w"
+    },
+    {
+      "name": "root_ang_vel_w",
+      "size": 3,
+      "source": "root_ang_vel_w"
+    },
+    {
+      "name": "tilt_angle",
+      "size": 1,
+      "source": "joint_group_position"
+    }
+  ],
+  "current_observation_terms": [
+    {
+      "name": "reference_accel",
+      "size": 3,
+      "source": "task_ref_accel_w"
+    },
+    {
+      "name": "reference_pos_error",
+      "size": 3,
+      "source": "task_ref_pos_error_w"
+    },
+    {
+      "name": "reference_vel_error",
+      "size": 3,
+      "source": "task_vel_error_w"
+    },
+    {
+      "name": "reference_yaw_accel",
+      "size": 1,
+      "source": "task_ref_yaw_accel"
+    },
+    {
+      "name": "yaw_error",
+      "size": 1,
+      "source": "task_yaw_error"
+    },
+    {
+      "name": "reference_yaw_rate_error",
+      "size": 1,
+      "source": "task_ref_yaw_rate_error"
+    },
+    {
+      "name": "thrust_wrench_forward_matrix",
+      "size": 24,
+      "source": "thrust_wrench_forward_matrix_w"
+    },
+    {
+      "name": "thrust_wrench_allocation_matrix",
+      "size": 24,
+      "source": "thrust_wrench_allocation_matrix_w"
+    },
+    {
+      "name": "thrust_center_xy",
+      "size": 2,
+      "source": "thrust_center_xy_b"
+    },
+    {
+      "name": "morph_trig",
+      "size": 2,
+      "source": "morph_trig"
+    }
+  ],
+  "rotor_mix_scale": [
+    0.5,
+    0.5,
+    0.5
+  ],
+  "wheel_command": {
+    "action_term": "wheel_speed",
+    "mapping": "differential_duty",
+    "drive_scale": 1.0,
+    "turn_scale": 0.5,
+    "stall_torque_nm": 1.0,
+    "no_load_rate_rad_s": 18.0
+  },
+  "forward_yaw_offset": 3.141592653589793,
+  "motor_tau_seconds": [
+    0.125,
+    0.175
+  ],
+  "observation_delay_steps": [
+    0,
+    1
+  ],
+  "checkpoint": null,
+  "checkpoint_sha256": null
+}

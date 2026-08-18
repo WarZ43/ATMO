@@ -41,8 +41,12 @@ def _env_float(name: str) -> float:
 
 def sample_profile(route_name: str, deterministic: bool, seed: int) -> dict[str, float]:
     """Sample the boundary values used by CombinedTask.reset_initial_state()."""
-    if route_name not in {"takeoff", "landing"}:
-        raise ValueError("route must be 'takeoff' or 'landing'")
+    if route_name not in {"takeoff", "landing", "full"}:
+        raise ValueError("route must be 'takeoff', 'landing' or 'full'")
+    if route_name == "full":
+        # The full mission starts on the takeoff route; its landing leg is
+        # anchored at the hover handover, not sampled here.
+        route_name = "takeoff"
 
     rng = np.random.default_rng(seed)
     vertical_fraction = float(np.clip(
@@ -135,8 +139,19 @@ def sample_profile(route_name: str, deterministic: bool, seed: int) -> dict[str,
 @dataclass
 class CombinedStage1Config(LandingStage1Config):
     policy_path: Path = Path(os.path.expanduser(os.getenv("ATMO_RL_POLICY_PATH", "~/policies/atmo_combined_stage1.pth")))
-    task_observation_dim: int = 4
+    # Four phase one-hots PLUS the signed phase-event timer. The contract has
+    # always said 5 (['drive','takeoff','flight','landing','phase_event_time_s'])
+    # and this runtime built only the 4 one-hots, which is the 528-vs-529
+    # mismatch that blocked closed-loop policy mode.
+    task_observation_dim: int = 5
+    # Matches CombinedTaskCfg.phase_event_time_clip_s in the training task.
+    phase_event_time_clip_s: float = 5.0
     tilt_action_direction: float = 1.0
+    drive_zero_thrust: bool = True
+    wheels_ground_only: bool = True
+    takeoff_thrust_full_tilt_rad: float = math.radians(45.0)
+    takeoff_thrust_zero_tilt_rad: float = math.radians(65.0)
+    takeoff_prep_duration_s: float = 2.0
 
     @property
     def observation_dim(self) -> int:
@@ -144,15 +159,47 @@ class CombinedStage1Config(LandingStage1Config):
 
 
 class CombinedObservationBuilder(LandingObservationBuilder):
-    """Build the 528-value combined observation and its forced three-state route."""
+    """Build the 529-value combined observation and its forced three-state route."""
 
     def __init__(self, cfg: CombinedStage1Config):
         self.route_name = os.getenv("ATMO_RL_ROUTE", "takeoff").strip().lower()
-        if self.route_name not in {"takeoff", "landing"}:
-            raise ValueError("ATMO_RL_ROUTE must be 'takeoff' or 'landing'")
-        self.route = TAKEOFF_ROUTE if self.route_name == "takeoff" else LANDING_ROUTE
+        if self.route_name not in {"takeoff", "landing", "full"}:
+            raise ValueError("ATMO_RL_ROUTE must be 'takeoff', 'landing' or 'full'")
+        # FULL: takeoff, hover flight_duration seconds, then land where it
+        # took off. Starts on the takeoff route; _transition_mode hands over
+        # to the landing branch at the end of the hover. Training never
+        # chained the two routes in one episode (12 s, one route each), so
+        # the hover-to-landing seam is a composition the policy has not seen
+        # -- same caveat as m4's mission cycle, and the reason the seam keeps
+        # the reference continuous rather than re-anchoring on measurement.
+        self.full_mission = self.route_name == "full"
+        self.full_ground_z = 0.0
+        self.route = LANDING_ROUTE if self.route_name == "landing" else TAKEOFF_ROUTE
         self.mode = DRIVE if self.route == TAKEOFF_ROUTE else FLIGHT
+        # DRIVE-ONLY: pin the route to DRIVE and never transition out of it.
+        #
+        # A ground test on either full route is close to meaningless. The
+        # landing route starts in FLIGHT, where the wheel actions are a
+        # don't-care -- nothing in training constrains them because the wheels
+        # are not touching anything -- and applying those to real wheels is
+        # what produced the erratic driving observed 2026-08-14. The takeoff
+        # route starts in DRIVE but leaves it after drive_duration.
+        #
+        # DRIVE is the only phase where wheel commands mean what they say, so
+        # a ground test should never leave it. Mirrors M4_DRIVE_ONLY in
+        # m4-direct-rl.
+        self.drive_only = os.getenv("ATMO_RL_DRIVE_ONLY", "0").lower() in {
+            "1", "true", "yes", "on"}
+        # Reference ground speed while drive-only, m/s. 0.0 = hold station,
+        # which is the honest default: it asks the policy to stay put and
+        # makes any drift its own doing.
+        self.drive_only_speed = float(os.getenv("ATMO_RL_DRIVE_ONLY_SPEED", "0.0"))
+        if self.drive_only:
+            self.route = TAKEOFF_ROUTE
+            self.route_name = "takeoff"
+            self.mode = DRIVE
         self.phase_elapsed_s = 0.0
+        self.phase_wall_start_time = time.monotonic()
         super().__init__(cfg)
 
     def reset_policy_context(self) -> None:
@@ -189,7 +236,29 @@ class CombinedObservationBuilder(LandingObservationBuilder):
         self.landing_start_velocity = zero.copy()
         self.ground_velocity = zero.copy()
 
-        if self.route == TAKEOFF_ROUTE:
+        if self.full_mission:
+            # Hover time between takeoff_to_flight and the landing handover.
+            self.flight_duration = float(os.getenv("ATMO_RL_HOVER_S", "3.0"))
+            # The landed z is the anchored z: the vehicle starts on its
+            # wheels, so the measured pose IS the ground truth the landing
+            # route would otherwise need --ground-z for.
+            self.full_ground_z = float(position[2])
+
+        if self.drive_only:
+            # Hold DRIVE forever, with a reference that translates along the
+            # measured heading at drive_only_speed. drive_duration is set far
+            # beyond any run so _reference_state never clamps the ramp.
+            self.spawn = position.copy()
+            self.liftoff = position.copy()
+            self.takeoff_end = position.copy()
+            self.drive_duration = 1.0e6
+            self.drive_velocity = np.array(
+                (self.drive_only_speed * math.cos(heading),
+                 self.drive_only_speed * math.sin(heading),
+                 0.0), dtype=np.float32)
+            self.drive_start_velocity = self.drive_velocity.copy()
+            self.mode = DRIVE
+        elif self.route == TAKEOFF_ROUTE:
             self.spawn = position.copy()
             self.liftoff = position.copy()
             self.takeoff_end = position + np.array((0.0, 0.0, max(float(takeoff_height), 0.0)), dtype=np.float32)
@@ -202,17 +271,19 @@ class CombinedObservationBuilder(LandingObservationBuilder):
             self.mode = FLIGHT
 
         self.phase_elapsed_s = 0.0
+        self.phase_wall_start_time = time.monotonic()
         self.reference_start_time = time.monotonic()
         self.reference_initialized = True
         self.observation_history_initialized = False
         self.last_debug = {}
 
     def observation(self) -> np.ndarray:
-        base = super().observation()
         transition = self._transition_mode()
+        base = super().observation()
         mode = np.zeros(4, dtype=np.float32)
         mode[self.mode] = 1.0
-        observation = np.concatenate((base, mode)).astype(np.float32)
+        task = np.concatenate((mode, [self._phase_event_time()])).astype(np.float32)
+        observation = np.concatenate((base, task)).astype(np.float32)
         if observation.size != self.cfg.observation_dim:
             raise RuntimeError(f"Combined observation has {observation.size} values, expected {self.cfg.observation_dim}")
         self.last_debug.update({
@@ -224,8 +295,60 @@ class CombinedObservationBuilder(LandingObservationBuilder):
             "obs_min": float(np.min(observation)),
             "obs_max": float(np.max(observation)),
         })
-        self.phase_elapsed_s += self.cfg.policy_dt
         return observation
+
+    def rotor_thrust_gate(self) -> float:
+        """Return physical rotor authority for the current combined mode."""
+        if not self.cfg.drive_zero_thrust:
+            return 1.0
+        if self.mode == DRIVE:
+            return 0.0
+        if self.mode != TAKEOFF:
+            return 1.0
+        tilt = float(np.clip(self.tilt_angle, 0.0, math.pi / 2.0))
+        return float(np.clip(
+            (self.cfg.takeoff_thrust_zero_tilt_rad - tilt)
+            / max(self.cfg.takeoff_thrust_zero_tilt_rad - self.cfg.takeoff_thrust_full_tilt_rad, 1e-6),
+            0.0,
+            1.0,
+        ))
+
+    def wheel_speed_gate(self) -> float:
+        """Return physical wheel authority, preserving only grounded motion."""
+        if not self.cfg.wheels_ground_only:
+            return 1.0
+        if self.mode in (DRIVE, LANDING):
+            return 1.0
+        return 1.0 if self.mode == TAKEOFF and self._phase_time() < 0.0 else 0.0
+
+    def _phase_event_time(self) -> float:
+        """Signed seconds to the next scheduled phase event, clipped.
+
+        Ported from the training task (combined_task._task_observation) so the
+        deployed observation matches the one the policy was trained on:
+
+            DRIVE, FLIGHT  -> 0.0
+            TAKEOFF        -> phase_time
+            LANDING        -> phase_time - landing_duration   (negative before
+                                                               touchdown)
+            clamped to +/- phase_event_time_clip_s
+
+        Drive and flight read ZERO deliberately. Their scheduled event is the
+        transition itself, and announcing it would reveal the route before the
+        mode one-hot does -- a leak the task avoids on purpose. Do not "fix"
+        them to report their own phase time.
+        """
+        phase_time = float(self._phase_time())
+        if self.mode == TAKEOFF:
+            value = phase_time
+        elif self.mode == LANDING:
+            value = phase_time - float(self.landing_duration)
+        else:
+            value = 0.0
+        # Match training exactly: nan_to_num(nan=0.0) THEN clamp. That maps NaN
+        # to 0 but +/-inf to +/-clip, which is not the same as zeroing both.
+        clip = float(self.cfg.phase_event_time_clip_s)
+        return float(np.clip(np.nan_to_num(value, nan=0.0), -clip, clip))
 
     def _read_vector(self, name: str) -> np.ndarray:
         return np.array([_env_float(f"ATMO_RL_COMBINED_{name.upper()}_{axis.upper()}") for axis in "xyz"], dtype=np.float32)
@@ -262,6 +385,7 @@ class CombinedObservationBuilder(LandingObservationBuilder):
         self.reference_heading = self.drive_heading if self.route == TAKEOFF_ROUTE else self.flight_heading
         self.mode = DRIVE if self.route == TAKEOFF_ROUTE else FLIGHT
         self.phase_elapsed_s = 0.0
+        self.phase_wall_start_time = time.monotonic()
         self.reference_start_time = time.monotonic()
         self.reference_initialized = True
         self.cfg.virtual_observation_offset = np.zeros(3, dtype=np.float32)
@@ -273,7 +397,7 @@ class CombinedObservationBuilder(LandingObservationBuilder):
             ))
 
     def _phase_time(self) -> float:
-        return self.phase_elapsed_s
+        return self.phase_elapsed_s + max(time.monotonic() - self.phase_wall_start_time, 0.0)
 
     def _reference_elapsed(self) -> float:
         return self._phase_time()
@@ -303,10 +427,35 @@ class CombinedObservationBuilder(LandingObservationBuilder):
         )
 
     def _transition_mode(self) -> str | None:
-        if (
-            (self.route == TAKEOFF_ROUTE and self.mode == FLIGHT)
-            or (self.route == LANDING_ROUTE and self.mode == DRIVE)
-        ):
+        if self.drive_only:
+            # Never leaves DRIVE. This is the whole point of the mode.
+            return None
+        if self.route == TAKEOFF_ROUTE and self.mode == FLIGHT:
+            if not self.full_mission:
+                return None
+            # FULL route hover complete: hand over to the landing branch.
+            # landing_start is the REFERENCE hover point, not the measured
+            # position -- anchoring transitions to the plan rather than the
+            # measurement is the m4 lesson (`be7da62`/`94c7ff7`): re-anchoring
+            # on a perturbed pose folds the tracking error into the route.
+            phase_time = self._phase_time()
+            if phase_time < self.flight_duration:
+                return None
+            overrun = max(phase_time - self.flight_duration, 0.0)
+            self.route = LANDING_ROUTE
+            self.landing_start = (
+                self.takeoff_end + self.takeoff_end_velocity * self.flight_duration
+            ).astype(np.float32)
+            self.landing_position = np.array(
+                (self.landing_start[0], self.landing_start[1], self.full_ground_z),
+                dtype=np.float32,
+            )
+            self.landing_start_velocity = self.takeoff_end_velocity.copy()
+            self.mode = LANDING
+            self.phase_elapsed_s = overrun
+            self.phase_wall_start_time = time.monotonic()
+            return "flight_to_landing"
+        if self.route == LANDING_ROUTE and self.mode == DRIVE:
             return None
         phase_time = self._phase_time()
         if self.route == TAKEOFF_ROUTE and self.mode == DRIVE:
@@ -315,15 +464,20 @@ class CombinedObservationBuilder(LandingObservationBuilder):
                 shift = self.drive_velocity * overrun
                 self.liftoff += shift
                 self.takeoff_end += shift
+                prep_shift = self.drive_velocity * self.cfg.takeoff_prep_duration_s
+                self.liftoff += prep_shift
+                self.takeoff_end += prep_shift
                 self.mode = TAKEOFF
                 self.reference_heading = self.flight_heading
-                self.phase_elapsed_s = 0.0
+                self.phase_elapsed_s = -self.cfg.takeoff_prep_duration_s
+                self.phase_wall_start_time = time.monotonic()
                 return "drive_to_takeoff"
         elif self.route == TAKEOFF_ROUTE and self.mode == TAKEOFF:
             if phase_time >= self.takeoff_duration:
                 overrun = max(phase_time - self.takeoff_duration, 0.0)
                 self.mode = FLIGHT
                 self.phase_elapsed_s = overrun
+                self.phase_wall_start_time = time.monotonic()
                 return "takeoff_to_flight"
         elif self.route == LANDING_ROUTE and self.mode == FLIGHT:
             overrun = max(phase_time - self.flight_duration, 0.0)
@@ -333,6 +487,7 @@ class CombinedObservationBuilder(LandingObservationBuilder):
                 self.landing_position += shift
                 self.mode = LANDING
                 self.phase_elapsed_s = 0.0
+                self.phase_wall_start_time = time.monotonic()
                 return "flight_to_landing"
         elif self.route == LANDING_ROUTE and self.mode == LANDING:
             overrun = max(phase_time - self.landing_duration, 0.0)
@@ -342,6 +497,7 @@ class CombinedObservationBuilder(LandingObservationBuilder):
                 self.mode = DRIVE
                 self.reference_heading = self.drive_heading
                 self.phase_elapsed_s = overrun
+                self.phase_wall_start_time = time.monotonic()
                 return "landing_to_drive"
         return None
 
@@ -359,6 +515,8 @@ class CombinedObservationBuilder(LandingObservationBuilder):
                 return position + self.drive_velocity * (t - self.drive_duration), self.drive_velocity.copy(), zero
             return position, velocity, accel
         if self.mode == TAKEOFF:
+            if t < 0.0:
+                return self.liftoff + self.drive_velocity * t, self.drive_velocity.copy(), zero
             segment_time = min(t, self.takeoff_duration)
             position, velocity, accel = self._trajectory_segment(
                 self.liftoff,

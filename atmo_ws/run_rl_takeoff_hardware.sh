@@ -4,8 +4,9 @@ set -euo pipefail
 workspace_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$workspace_dir"
 
-source /opt/ros/foxy/setup.bash
-source install/setup.bash
+# Distro-agnostic: the robot runs Humble, not the Foxy this was written
+# against. scripts/atmo_env.sh detects it and sources the workspace.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/atmo_env.sh"
 
 export ATMO_RL_TASK=takeoff
 export ATMO_RL_HARDWARE_MODE=policy

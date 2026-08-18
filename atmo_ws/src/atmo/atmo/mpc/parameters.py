@@ -1,5 +1,5 @@
 import numpy as np
-from os import getenv
+from os import getenv, path
 
 # Declare parameter dictionary
 params_ = {}
@@ -52,9 +52,37 @@ params_['takeoff_height']        = -1.0                           # height at wh
 params_['z0']                    = -0.16                        
 params_['zf']                    = -0.30
 
-# Roboclaw addresses
-params_['tilt_roboclaw_address']         = "/dev/ttyACM1"
-params_['drive_roboclaw_address']        = "/dev/ttyACM0"
+# Roboclaw addresses.
+#
+# WARNING: /dev/ttyACM* numbering is USB enumeration order, not identity. Which
+# RoboClaw lands on ACM0 versus ACM1 can change on any boot, on a replug, or if
+# one of them powers up slower than the other. Getting it backwards sends tilt
+# commands to the drive motors and drive commands to the tilt -- so this is a
+# safety-relevant value that the operating system is free to change underneath
+# you. It was already swapped by hand once on the vehicle.
+#
+# A udev rule keyed on the USB serial number does NOT work for these boards:
+# measured on the vehicle, both RoboClaws enumerate with the identical
+# descriptor `usb-Basicmicro_Inc._USB_Roboclaw_2x7A-if00`, so /dev/serial/by-id
+# holds only one symlink and it is a coin flip which board owns it.
+#
+# What does work is /dev/serial/by-path, which keys on the physical USB socket
+# rather than the device. Two boards in two sockets get two stable names:
+#
+#   export ATMO_TILT_ROBOCLAW=/dev/serial/by-path/platform-3610000.usb-usb-0:2.1:1.0
+#   export ATMO_DRIVE_ROBOCLAW=/dev/serial/by-path/platform-3610000.usb-usb-0:2.2:1.0
+#
+# Those paths are this vehicle's, from `ls -l /dev/serial/by-path/`. They stay
+# valid across reboots and enumeration races, and break loudly (no such file)
+# rather than silently swapping if a board is moved to a different socket --
+# which is the whole point, because a silent swap drives the wheels with tilt
+# commands.
+#
+# Map socket to board by unplugging one and seeing which path disappears, then
+# trace its cable to the motor it actually drives. Do that before commanding
+# anything.
+params_['tilt_roboclaw_address']         = getenv("ATMO_TILT_ROBOCLAW", "/dev/ttyACM0")
+params_['drive_roboclaw_address']        = getenv("ATMO_DRIVE_ROBOCLAW", "/dev/ttyACM1")
 
 # kinematic driving parameters
 params_['wheel_base']                    = 0.135      # half the distance between the wheels
@@ -64,17 +92,24 @@ params_['max_drive_speed']               = params_.get('wheel_radius') * params_
 params_['max_turn_speed']                = params_.get('wheel_radius') * params_.get('max_wheel_angular_velocity') / params_.get('wheel_base')   # rad/s
 
 # MPC parameters
-params_['acados_ocp_path']       = getenv("ATMO") +'/atmo_ws/src/atmo/atmo/mpc/acados/'                  # path that acados model is compiled to
+# $ATMO is unset on the vehicle, and `getenv("ATMO") + "/..."` raises TypeError
+# on None -- which made this whole module unimportable, and with it every node
+# that reads params_, the RL tilt and drive controllers included. Fall back to
+# this file's own location instead of requiring the variable.
+_ATMO_ROOT = getenv("ATMO")
+if _ATMO_ROOT:
+    params_['acados_ocp_path'] = _ATMO_ROOT + '/atmo_ws/src/atmo/atmo/mpc/acados/'
+else:
+    params_['acados_ocp_path'] = path.join(path.dirname(path.abspath(__file__)), 'acados') + '/'
 params_['generate_mpc']          = True                                                                  # generate acados model
 params_['build_mpc']             = True                                                                  # build acados model
 params_['cost_update_freq']      = 10 * params_.get('Ts')                                                # frequency at which cost is updated (seconds)
 params_['N_horizon']             = 10
 params_['T_horizon']             = 1.2
 
-# MPC constraints
-params_['u_max']            = 1.0
-params_['v_max_absolute']   = (np.pi/2)/4
-params_['T_max']            = 4*params_['kT']
+# MPC constraints: defined at the END of this file, after kT exists. T_max is
+# 4 * kT, and kT is set further down, so computing it here raised KeyError and
+# was the other half of why this module could not be imported.
 
 # cost function parameters
 params_['w_x']        = 1.0     
@@ -174,3 +209,10 @@ params_['r_AG_right_z']     = -0.02495
 params_['r_AR1_x']          = 0.16491
 params_['r_AR1_y']          = 0.13673
 params_['r_AR1_z']          = -0.069563
+
+
+# MPC constraints. These live here, not with the other MPC parameters,
+# because T_max depends on kT and kT is defined above this point.
+params_['u_max']            = 1.0
+params_['v_max_absolute']   = (np.pi/2)/4
+params_['T_max']            = 4*params_['kT']

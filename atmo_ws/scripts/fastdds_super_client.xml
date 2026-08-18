@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  SUPER_CLIENT profile for ROS 2 CLI tools under a Fast DDS discovery server.
+
+  Without this, a plain discovery-server CLIENT learns only the endpoints it
+  needs, so `ros2 node list` and `ros2 topic list` return empty even while data
+  flows normally. See docs/optitrack_bringup.md, "The CLI goes blind under a
+  discovery server".
+
+  Usage on both laptop and Jetson:
+
+      export FASTRTPS_DEFAULT_PROFILES_FILE=<repo>/scripts/fastdds_super_client.xml
+      unset ROS_DISCOVERY_SERVER
+
+  The <address> below is the LAPTOP's WiFi IP on the ROBOT ROUTER -- the network
+  the Jetson is on (192.168.0.0/24), not campus WiFi. The laptop cannot be on
+  both at once, and every "it broke again" during the 2026-08-12 session was the
+  laptop having moved to campus WiFi, where this address does not exist.
+
+  Check with `ip -brief addr` on the laptop and update here, or override for one
+  shell with:
+
+      sed "s/192.168.0.4/<new-ip>/" scripts/fastdds_super_client.xml > /tmp/sc.xml
+      export FASTRTPS_DEFAULT_PROFILES_FILE=/tmp/sc.xml
+
+  The RemoteServer prefix is the well-known identifier for server id 0
+  (`fast-discovery-server -i 0`). It is not a value to invent.
+-->
+<dds xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <profiles>
+    <participant profile_name="super_client_profile" is_default_profile="true">
+      <rtps>
+        <builtin>
+          <discovery_config>
+            <discoveryProtocol>SUPER_CLIENT</discoveryProtocol>
+            <discoveryServersList>
+              <RemoteServer prefix="44.53.00.5f.45.50.52.4f.53.49.4d.41">
+                <metatrafficUnicastLocatorList>
+                  <locator>
+                    <udpv4>
+                      <address>192.168.0.4</address>
+                      <port>11811</port>
+                    </udpv4>
+                  </locator>
+                </metatrafficUnicastLocatorList>
+              </RemoteServer>
+            </discoveryServersList>
+          </discovery_config>
+        </builtin>
+      </rtps>
+    </participant>
+  </profiles>
+</dds>

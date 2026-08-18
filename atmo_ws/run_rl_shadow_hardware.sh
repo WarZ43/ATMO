@@ -10,8 +10,9 @@ if [[ "$task" != "landing" && "$task" != "takeoff" ]]; then
     exit 2
 fi
 
-source /opt/ros/foxy/setup.bash
-source install/setup.bash
+# Distro-agnostic: the robot runs Humble, not the Foxy this was written
+# against. scripts/atmo_env.sh detects it and sources the workspace.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/atmo_env.sh"
 
 if [[ "$task" == "landing" ]]; then
     : "${ATMO_RL_GROUND_Z:?Set ATMO_RL_GROUND_Z to the measured landed vehicle z coordinate}"

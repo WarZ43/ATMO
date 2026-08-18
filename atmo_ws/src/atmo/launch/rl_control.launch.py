@@ -1,12 +1,13 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import AndSubstitution, LaunchConfiguration
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
     command_hardware = LaunchConfiguration('command_hardware')
+    drive_hardware = LaunchConfiguration('drive_hardware')
     route = LaunchConfiguration('route')
     hardware_mode = LaunchConfiguration('hardware_mode')
     action_test = LaunchConfiguration('action_test')
@@ -15,7 +16,17 @@ def generate_launch_description():
     rotor_baseline = LaunchConfiguration('rotor_baseline')
     action_test_duration = LaunchConfiguration('action_test_duration')
     kill_test_passed = LaunchConfiguration('kill_test_passed')
+    record = LaunchConfiguration('record')
     return LaunchDescription([
+        DeclareLaunchArgument(
+            'record',
+            default_value='true',
+            description=(
+                'Record a rosbag from this launch. Set false when the session '
+                'script runs its own recorder, so the bag is not written twice '
+                'and can be SIGINTed and waited for on shutdown.'
+            ),
+        ),
         DeclareLaunchArgument(
             'route',
             default_value='landing',
@@ -24,7 +35,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'hardware_mode',
             default_value='policy',
-            description='policy, shadow, sensor_test, or action_test',
+            description='policy, ground, shadow, sensor_test, or action_test',
         ),
         DeclareLaunchArgument(
             'action_test',
@@ -44,6 +55,17 @@ def generate_launch_description():
             'command_hardware',
             default_value='true',
             description='Launch the physical tilt and drive command nodes',
+        ),
+        DeclareLaunchArgument(
+            'drive_hardware',
+            default_value='false',
+            description=(
+                'Launch the drive (wheel) node. DEFAULT FALSE since '
+                '2026-08-17: the drive RoboClaw is dead (regen through the '
+                '12V regulator -- see docs/session_state.md). Set true only '
+                'after a replacement board is installed BEHIND the battery '
+                'bypass diode.'
+            ),
         ),
         Node(
             package='atmo',
@@ -73,7 +95,9 @@ def generate_launch_description():
             executable='drive_controller_hardware',
             name='drive_controller_hardware',
             output='log',
-            condition=IfCondition(command_hardware),
+            # Both switches must be true: the profile wants command nodes AND
+            # the drive board is declared alive (see the drive_hardware arg).
+            condition=IfCondition(AndSubstitution(command_hardware, drive_hardware)),
         ),
         ExecuteProcess(
             cmd=[
@@ -82,19 +106,20 @@ def generate_launch_description():
                 'record',
                 '/fmu/in/actuator_motors',
                 '/fmu/in/vehicle_visual_odometry',
-                '/fmu/out/battery_status',
-                '/fmu/out/esc_status',
+                '/fmu/out/battery_status_v1',
                 '/fmu/out/estimator_status_flags',
                 '/fmu/out/failsafe_flags',
                 '/fmu/out/input_rc',
                 '/fmu/out/vehicle_command_ack',
                 '/fmu/out/vehicle_control_mode',
                 '/fmu/out/vehicle_odometry',
-                '/fmu/out/vehicle_status',
+                '/fmu/out/vehicle_status_v1',
                 '/tilt_vel',
                 '/drive_vel',
                 '/atmo/rl/manual_override',
+                '/atmo/groundtruth_odom',
             ],
             output='screen',
+            condition=IfCondition(record),
         ),
     ])

@@ -1,5 +1,6 @@
 import unittest
 from collections import OrderedDict
+import time
 from unittest.mock import patch
 from pathlib import Path
 import tempfile
@@ -74,7 +75,25 @@ class LandingStage1ContractTest(unittest.TestCase):
             angular_velocity=(0.0, 0.0, 0.0),
         )
         delayed_observation = delayed.observation()
-        np.testing.assert_allclose(delayed_observation[:3], (0.0, 1.0, 2.0), atol=1e-6)
+        # PX4 (1, 0, -2) becomes training-world (0, 1, 2), then the ATMO
+        # forward-yaw offset of pi maps it into the policy heading frame.
+        np.testing.assert_allclose(delayed_observation[:3], (-1.0, 0.0, 2.0), atol=1e-6)
+
+    def test_heading_frame_rotates_vectors_and_strips_yaw(self):
+        cfg = self.make_config()
+        builder = LandingObservationBuilder(cfg)
+        yaw = np.pi / 2.0
+        builder.update_px4_state(
+            position=(0.0, 0.0, -2.0),
+            quat_wxyz=(np.cos(yaw / 2.0), 0.0, 0.0, np.sin(yaw / 2.0)),
+            linear_velocity=(0.0, 0.0, 0.0),
+            angular_velocity=(1.0, 0.0, 0.0),
+        )
+        history = builder._history_observation()
+        # Vehicle yaw pi/2 plus ATMO's pi forward offset gives 3pi/2.
+        np.testing.assert_allclose(history[0:3], (0.0, 0.0, 2.0), atol=1e-6)
+        np.testing.assert_allclose(history[12:15], (0.0, 0.0, 0.0), atol=1e-6)
+        np.testing.assert_allclose(history[15:18], (-1.0, 0.0, 0.0), atol=1e-6)
 
     def test_stage1_randomization_and_reference(self):
         def make_randomized_builder():
@@ -129,11 +148,19 @@ class LandingStage1ContractTest(unittest.TestCase):
         action[5:] = (0.1, 0.2)
         command = adapter.pre_physics_step(action)
         np.testing.assert_allclose(command.rotors_unfiltered, (0.55, 0.45, 0.45, 0.55), atol=1e-6)
-        np.testing.assert_allclose(command.wheel_efforts, (-0.3, -0.1, -0.1, -0.3), atol=1e-6)
+        np.testing.assert_allclose(command.wheel_efforts, (-0.2, 0.0, 0.0, -0.2), atol=1e-6)
 
         action[5:] = (1.0, 1.0)
         saturated = adapter.pre_physics_step(action)
         self.assertTrue(np.all(np.abs(saturated.wheel_efforts) <= cfg.wheel_effort_limit))
+
+    def test_tilt_history_keeps_continuous_action_after_physical_quantization(self):
+        cfg = self.make_config()
+        command = LandingActionAdapter(cfg).pre_physics_step(
+            np.array((0.0, 0.0, 0.0, 0.0, 0.3, 0.0, 0.0), dtype=np.float32)
+        )
+        self.assertAlmostEqual(float(command.tilt_velocity), 0.0, places=6)
+        self.assertAlmostEqual(float(command.semantic_action[4]), 0.3, places=6)
 
     def test_combined_fixed_vertical_routes_anchor_to_measured_state(self):
         for route, expected_mode in (("takeoff", 0), ("landing", 2)):
@@ -159,8 +186,10 @@ class LandingStage1ContractTest(unittest.TestCase):
                 builder.anchor_fixed_vertical_route()
                 observation = builder.observation()
 
-                self.assertEqual(observation.shape, (528,))
-                np.testing.assert_allclose(observation[-4:], np.eye(4, dtype=np.float32)[expected_mode])
+                # 529, not 528: the task observation is four phase one-hots
+                # PLUS the signed phase-event timer. See test_phase_event_time.
+                self.assertEqual(observation.shape, (529,))
+                np.testing.assert_allclose(observation[-5:-1], np.eye(4, dtype=np.float32)[expected_mode])
                 reference_position, reference_velocity, _ = builder._reference_state()
                 np.testing.assert_allclose(reference_position, builder.position, atol=1e-6)
                 np.testing.assert_allclose(reference_velocity, np.zeros(3), atol=1e-6)
@@ -168,6 +197,47 @@ class LandingStage1ContractTest(unittest.TestCase):
                     self.assertAlmostEqual(float(builder.takeoff_end[2] - builder.position[2]), 1.0)
                 else:
                     self.assertAlmostEqual(float(builder.landing_position[2]), 0.20)
+
+    def test_combined_physical_gates_match_training_modes(self):
+        cfg = CombinedStage1Config(
+            randomize_reset=False,
+            randomize_motor_dynamics=False,
+            observation_noise=False,
+            observation_delay_min_steps=0,
+            observation_delay_max_steps=0,
+        )
+        with patch.dict("os.environ", {"ATMO_RL_ROUTE": "takeoff"}):
+            builder = CombinedObservationBuilder(cfg)
+        builder.update_px4_state(
+            position=(0.0, 0.0, -0.2),
+            quat_wxyz=(1.0, 0.0, 0.0, 0.0),
+            linear_velocity=(0.0, 0.0, 0.0),
+            angular_velocity=(0.0, 0.0, 0.0),
+        )
+        builder.reset_policy_context()
+        builder.anchor_fixed_vertical_route()
+
+        self.assertEqual(builder.mode, 0)
+        self.assertAlmostEqual(builder.rotor_thrust_gate(), 0.0)
+        self.assertAlmostEqual(builder.wheel_speed_gate(), 1.0)
+
+        builder.mode = 1
+        builder.phase_elapsed_s = -cfg.takeoff_prep_duration_s
+        builder.phase_wall_start_time = time.monotonic()
+        builder.tilt_angle = cfg.takeoff_thrust_zero_tilt_rad
+        self.assertAlmostEqual(builder.rotor_thrust_gate(), 0.0)
+        self.assertAlmostEqual(builder.wheel_speed_gate(), 1.0)
+        builder.tilt_angle = cfg.takeoff_thrust_full_tilt_rad
+        self.assertAlmostEqual(builder.rotor_thrust_gate(), 1.0)
+        builder.phase_elapsed_s = 0.1
+        self.assertAlmostEqual(builder.wheel_speed_gate(), 0.0)
+
+        builder.mode = 2
+        self.assertAlmostEqual(builder.rotor_thrust_gate(), 1.0)
+        self.assertAlmostEqual(builder.wheel_speed_gate(), 0.0)
+        builder.mode = 3
+        self.assertAlmostEqual(builder.rotor_thrust_gate(), 1.0)
+        self.assertAlmostEqual(builder.wheel_speed_gate(), 1.0)
 
     @unittest.skipIf(torch is None, "PyTorch is not installed")
     def test_rl_games_loader_selects_actor_when_critic_keys_come_first(self):

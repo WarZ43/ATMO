@@ -9,7 +9,14 @@ setup(
     name=package_name,
     version='0.0.0',
     packages=[package_name,mpc_submodule],
-    package_data={package_name: ['policies/README.md', 'policies/*.pth']},
+    package_data={
+        package_name: [
+            'policies/README.md',
+            'policies/*.pth',
+            'policies/*.npz',
+            'contracts/*.json',
+        ]
+    },
     include_package_data=True,
     data_files=[
         ('share/ament_index/resource_index/packages',
@@ -35,7 +42,8 @@ setup(
             'rl_controller_hardware = atmo.rl_controller_hardware:main',
             'rl_controller_sim = atmo.rl_controller_sim:main',
             'load_cell_test = atmo.load_cell_test:main',
-            'relay_mocap = atmo.relay_mocap:main'
+            'relay_mocap = atmo.relay_mocap:main',
+            'mocap_bridge = atmo.mocap_bridge:main'
         ],
     },
 )

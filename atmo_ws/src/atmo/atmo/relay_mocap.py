@@ -36,10 +36,13 @@ class MocapToVisualOdometry(Node):
         # Set orientation (using quaternion)
         vehicle_odom_msg.q = [msg.pose.orientation.w, -msg.pose.orientation.z, msg.pose.orientation.x, -msg.pose.orientation.y]
 
-        # Set velocity_frame (assuming NED for simplicity)
-        vehicle_odom_msg.velocity_frame = 2
-        vehicle_odom_msg.velocity = [0.0, 0.0, 0.0] # in m/s
-        vehicle_odom_msg.angular_velocity = [0.0, 0.0, 0.0] # in body-fixed frame (rad/s)
+        # This relay measures no velocity, and NaN is how PX4 is told a field is
+        # not supplied. Zeros are not "no data" -- the EKF fuses them as a
+        # measurement that the vehicle is stationary, which fights every real
+        # motion. Superseded by atmo/mocap_bridge.py, which derives velocity.
+        nan = float('nan')
+        vehicle_odom_msg.velocity = [nan, nan, nan] # in m/s
+        vehicle_odom_msg.angular_velocity = [nan, nan, nan] # body-fixed (rad/s)
         vehicle_odom_msg.position_variance = [0.0, 0.0, 0.0]
         vehicle_odom_msg.orientation_variance = [0.0, 0.0, 0.0]
         vehicle_odom_msg.velocity_variance = [0.0, 0.0, 0.0]
