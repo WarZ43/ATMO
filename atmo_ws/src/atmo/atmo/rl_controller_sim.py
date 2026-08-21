@@ -295,6 +295,9 @@ class RLCombinedSim(Node):
         self.motor_speed_publisher = self.create_publisher(
             Float32MultiArray, "/motor_speed", QUEUE_SIZE
         )
+        self.policy_action_publisher = self.create_publisher(
+            Float32MultiArray, "/atmo/rl/policy_action", QUEUE_SIZE
+        )
         self.tilt_vel_publisher = self.create_publisher(TiltVel, "/tilt_vel", QUEUE_SIZE)
 
         self.create_subscription(
@@ -487,6 +490,7 @@ class RLCombinedSim(Node):
                 command = self._drive_test_command(command)
             self._set_observation_tilt()
             self.observations.append_action(command.semantic_action)
+            self._publish_policy_action(command)
             self._maybe_log_action(self.fixed_action, command)
             return
 
@@ -499,7 +503,17 @@ class RLCombinedSim(Node):
         command = self.adapter.pre_physics_step(action)
         self._set_observation_tilt()
         self.observations.append_action(command.semantic_action)
+        self._publish_policy_action(command)
         self._maybe_log_action(action, command)
+
+    def _publish_policy_action(self, command):
+        """Publish raw network output followed by the adapted semantic action."""
+        msg = Float32MultiArray()
+        msg.data = [
+            float(value)
+            for value in list(command.raw_action) + list(command.semantic_action)
+        ]
+        self.policy_action_publisher.publish(msg)
 
     def _drive_test_command(self, command):
         measured_tilt = float(

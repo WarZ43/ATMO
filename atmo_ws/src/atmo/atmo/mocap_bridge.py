@@ -48,6 +48,7 @@ from rclpy.qos import qos_profile_sensor_data
 
 from atmo.mocap_frames import (
     px4_position_atmo_legacy,
+    apply_mount_yaw,
     px4_quaternion_atmo_legacy,
     px4_quaternion_composed,
     quat_conjugate,
@@ -68,6 +69,10 @@ class MocapBridge(Node):
         self.declare_parameter("body", "m4_base")
         self.declare_parameter("topic", "")
         self.declare_parameter("source_frame", "y_up")
+        # Heading of the Motive rigid body relative to the flight controller and
+        # the rotor numbering. 180 is this vehicle's measured mounting; see
+        # apply_mount_yaw. Set 0 only if the rigid body is redefined to match.
+        self.declare_parameter("mount_yaw_deg", 180.0)
         self.declare_parameter("odom_topic", "/atmo/groundtruth_odom")
         self.declare_parameter("px4_relay", True)
         self.declare_parameter("px4_quaternion", "atmo_legacy")
@@ -81,6 +86,7 @@ class MocapBridge(Node):
         topic = self.get_parameter("topic").value
         self.topic = topic if topic else "/vrpn_mocap/%s/pose" % self.body
         self.source_frame = self.get_parameter("source_frame").value
+        self.mount_yaw_rad = math.radians(float(self.get_parameter("mount_yaw_deg").value))
         if self.source_frame not in ("y_up", "z_up"):
             raise ValueError("source_frame must be y_up or z_up")
         self.px4_quaternion_mode = self.get_parameter("px4_quaternion").value
@@ -135,10 +141,11 @@ class MocapBridge(Node):
         )
 
         self.get_logger().info(
-            "Bridging %s (source_frame=%s) -> %s%s"
+            "Bridging %s (source_frame=%s, mount_yaw=%.1f deg) -> %s%s"
             % (
                 self.topic,
                 self.source_frame,
+                math.degrees(self.mount_yaw_rad),
                 self.get_parameter("odom_topic").value,
                 (
                     "; PX4 vision relay ON (quaternion=%s, velocity=%s)"
@@ -192,6 +199,10 @@ class MocapBridge(Node):
         position, quaternion = to_z_up(
             raw_position, raw_quaternion, self.source_frame
         )
+        # Correct the mounting BEFORE the twist is differentiated below, so the
+        # body-frame rates come out in the corrected frame with no further work.
+        if self.mount_yaw_rad != 0.0:
+            quaternion = apply_mount_yaw(quaternion, self.mount_yaw_rad)
 
         now = self._wall_clock()
         self.received += 1

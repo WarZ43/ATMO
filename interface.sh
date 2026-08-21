@@ -24,7 +24,7 @@
 set -euo pipefail
 
 ATMO_XRCE_DEV="${ATMO_XRCE_DEV:-/dev/ttyUSB0}"
-ATMO_XRCE_BAUD="${ATMO_XRCE_BAUD:-460800}"
+ATMO_XRCE_BAUD="${ATMO_XRCE_BAUD:-921600}"
 export ROS_DOMAIN_ID="${ATMO_ROS_DOMAIN_ID:-0}"
 
 if [[ ! -e "${ATMO_XRCE_DEV}" ]]; then
@@ -35,4 +35,13 @@ fi
 
 echo "uXRCE agent: dev=${ATMO_XRCE_DEV} baud=${ATMO_XRCE_BAUD} domain=${ROS_DOMAIN_ID}"
 echo "This must match PX4's UXRCE_DDS_CFG, SER_TEL<n>_BAUD and UXRCE_DDS_DOM_ID."
+# When the ROS 2 stack runs against a discovery server (the arena/mocap
+# topology), the agent MUST register there too or PX4 data is invisible to
+# every node: measured 2026-08-17, agent on plain multicast + nodes on the
+# server formed two parallel worlds with no error anywhere.
+if [ -n "${ATMO_DDS_DISCOVERY_SERVER:-}" ]; then
+    export ROS_DISCOVERY_SERVER="${ATMO_DDS_DISCOVERY_SERVER}"
+    echo "agent joining discovery server ${ROS_DISCOVERY_SERVER}"
+fi
+
 exec MicroXRCEAgent serial --dev "${ATMO_XRCE_DEV}" -b "${ATMO_XRCE_BAUD}" "$@"

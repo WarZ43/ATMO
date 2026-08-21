@@ -1,0 +1,5 @@
+1787096677.8545687 [INFO] [launch]: All log files can be found below /home/m4/.ros/log/2026-08-18-16-44-37-851532-m4-3629
+1787096677.8550413 [INFO] [launch]: Default logging verbosity is set to INFO
+1787096678.0360172 [INFO] [rl_controller_hardware-1]: process started with pid [3696]
+1787097164.8173203 [WARNING] [launch]: user interrupted with ctrl-c (SIGINT)
+1787097165.2205930 [INFO] [rl_controller_hardware-1]: process has finished cleanly [pid 3696]

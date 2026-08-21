@@ -1,0 +1,62 @@
+1787108654.5893748 [INFO] [launch]: All log files can be found below /home/m4/.ros/log/2026-08-18-20-04-14-586893-m4-7429
+1787108654.5897956 [INFO] [launch]: Default logging verbosity is set to INFO
+1787108654.6995251 [INFO] [rl_controller_hardware-1]: process started with pid [7481]
+1787108654.7000668 [INFO] [tilt_controller_hardware-2]: process started with pid [7483]
+1787108658.6165717 [tilt_controller_hardware-2] [INFO] [1787108658.615940236] [tilt_controller_hardware]: Starting TiltHardware node...
+1787108707.0745387 [WARNING] [launch]: user interrupted with ctrl-c (SIGINT)
+1787108707.0871186 [tilt_controller_hardware-2] [INFO] [1787108707.086602950] [tilt_controller_hardware]: tilt motor zeroed
+1787108707.0875399 [tilt_controller_hardware-2] Failed to publish log message to rosout: publisher's context is invalid, at ./src/rcl/publisher.c:389
+1787108707.0906072 [tilt_controller_hardware-2] [INFO] [1787108707.090088546] [tilt_controller_hardware]: port closed !
+1787108707.0909338 [tilt_controller_hardware-2] Failed to publish log message to rosout: publisher's context is invalid, at ./src/rcl/publisher.c:389
+1787108707.1197336 [tilt_controller_hardware-2] tilt angle is: 32.49 deg
+1787108707.1206939 [tilt_controller_hardware-2] tilt angle is: 32.49 deg
+1787108707.1208632 [tilt_controller_hardware-2] tilt angle is: 32.49 deg
+1787108707.1210027 [tilt_controller_hardware-2] tilt angle is: 32.49 deg
+1787108707.1211250 [tilt_controller_hardware-2] tilt angle is: 32.49 deg
+1787108707.1212456 [tilt_controller_hardware-2] tilt angle is: 32.49 deg
+1787108707.1213558 [tilt_controller_hardware-2] tilt angle is: 32.49 deg
+1787108707.1214571 [tilt_controller_hardware-2] tilt angle is: 32.49 deg
+1787108707.1215568 [tilt_controller_hardware-2] tilt angle is: 32.49 deg
+1787108707.1221883 [tilt_controller_hardware-2] tilt angle is: 32.49 deg
+1787108707.1223474 [tilt_controller_hardware-2] tilt angle is: 32.49 deg
+1787108707.1224759 [tilt_controller_hardware-2] tilt angle is: 32.49 deg
+1787108707.1228943 [tilt_controller_hardware-2] tilt angle is: 32.49 deg
+1787108707.1230614 [tilt_controller_hardware-2] tilt angle is: 32.49 deg
+1787108707.1231952 [tilt_controller_hardware-2] tilt angle is: 32.49 deg
+1787108707.1233110 [tilt_controller_hardware-2] tilt angle is: 32.49 deg
+1787108707.1234193 [tilt_controller_hardware-2] tilt angle is: 32.49 deg
+1787108707.1235254 [tilt_controller_hardware-2] tilt angle is: 32.49 deg
+1787108707.1236308 [tilt_controller_hardware-2] tilt angle is: 32.49 deg
+1787108707.1237364 [tilt_controller_hardware-2] tilt angle is: 32.49 deg
+1787108707.1238427 [tilt_controller_hardware-2] tilt angle is: 32.49 deg
+1787108707.1239467 [tilt_controller_hardware-2] tilt angle is: 32.49 deg
+1787108707.1240504 [tilt_controller_hardware-2] tilt angle is: 32.49 deg
+1787108707.1241553 [tilt_controller_hardware-2] tilt angle is: 32.49 deg
+1787108707.1242599 [tilt_controller_hardware-2] tilt angle is: 22.96 deg
+1787108707.1243634 [tilt_controller_hardware-2] tilt angle is: 4.50 deg
+1787108707.1244657 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787108707.1245677 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787108707.1246707 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787108707.1247756 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787108707.1248789 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787108707.1249816 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787108707.1250868 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787108707.1251931 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787108707.1252983 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787108707.1254029 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787108707.1255052 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787108707.1256087 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787108707.1257141 [tilt_controller_hardware-2] tilt angle is: 16.41 deg
+1787108707.1258187 [tilt_controller_hardware-2] tilt angle is: 40.38 deg
+1787108707.1259210 [tilt_controller_hardware-2] tilt angle is: 51.38 deg
+1787108707.1261904 [tilt_controller_hardware-2] tilt angle is: 56.26 deg
+1787108707.1263068 [tilt_controller_hardware-2] tilt angle is: 56.25 deg
+1787108707.1264160 [tilt_controller_hardware-2] tilt angle is: 56.25 deg
+1787108707.1265595 [tilt_controller_hardware-2] tilt angle is: 56.25 deg
+1787108707.1266797 [tilt_controller_hardware-2] tilt angle is: 56.25 deg
+1787108707.1267874 [tilt_controller_hardware-2] tilt angle is: 56.25 deg
+1787108707.1268954 [tilt_controller_hardware-2] tilt angle is: 56.25 deg
+1787108707.1270041 [tilt_controller_hardware-2] tilt angle is: 56.25 deg
+1787108707.3717008 [WARNING] [launch]: user interrupted with ctrl-c (SIGINT) again, ignoring...
+1787108707.3876040 [ERROR] [rl_controller_hardware-1]: process has died [pid 7481, exit code -2, cmd '/home/m4/ATMO_rl/atmo_ws/install/atmo/lib/atmo/rl_controller_hardware --ros-args -r __node:=rl_controller_hardware'].
+1787108707.3892846 [ERROR] [tilt_controller_hardware-2]: process has died [pid 7483, exit code -2, cmd '/home/m4/ATMO_rl/atmo_ws/install/atmo/lib/atmo/tilt_controller_hardware --ros-args -r __node:=tilt_controller_hardware'].

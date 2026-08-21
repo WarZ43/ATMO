@@ -135,3 +135,44 @@ class TestPx4QuaternionConventions(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_mount_yaw_relabels_the_body_and_leaves_the_world_alone():
+    """A 180 deg mount correction flips roll and pitch, not yaw or position.
+
+    This is the ATMO fix of 2026-08-20: the Motive rigid body is defined 180 deg
+    from the flight controller and the rotor numbering (measured 178.6-179.9 deg
+    across three flights), and the correction has to be a BODY relabelling.
+    """
+    import math
+
+    import numpy as np
+
+    from atmo.mocap_frames import apply_mount_yaw, quat_multiply
+
+    def q_rpy(roll, pitch, yaw):
+        cr, sr = math.cos(roll / 2), math.sin(roll / 2)
+        cp, sp = math.cos(pitch / 2), math.sin(pitch / 2)
+        cy, sy = math.cos(yaw / 2), math.sin(yaw / 2)
+        return quat_multiply(
+            (cy, 0.0, 0.0, sy), quat_multiply((cp, 0.0, sp, 0.0), (cr, sr, 0.0, 0.0))
+        )
+
+    def rpy_of(q):
+        w, x, y, z = q / np.linalg.norm(q)
+        return (
+            math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y)),
+            math.asin(max(-1.0, min(1.0, 2 * (w * y - z * x)))),
+            math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z)),
+        )
+
+    for roll, pitch, yaw in ((0.2, 0.0, 0.0), (0.0, -0.3, 0.0), (0.1, 0.2, 0.7)):
+        corrected = rpy_of(apply_mount_yaw(q_rpy(roll, pitch, yaw), math.pi))
+        assert abs(corrected[0] + roll) < 1e-6, "roll must flip"
+        assert abs(corrected[1] + pitch) < 1e-6, "pitch must flip"
+        # yaw shifts by the mount angle and keeps its sense
+        assert abs(math.sin(corrected[2] - (yaw + math.pi))) < 1e-6
+
+    # zero is exactly the identity, so mount_yaw_deg=0 is a true no-op
+    q = q_rpy(0.1, -0.2, 0.3)
+    assert np.allclose(apply_mount_yaw(q, 0.0), q)

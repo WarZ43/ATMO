@@ -1,0 +1,5 @@
+1787097478.0041373 [INFO] [launch]: All log files can be found below /home/m4/.ros/log/2026-08-18-16-57-58-001847-m4-6016
+1787097478.0044723 [INFO] [launch]: Default logging verbosity is set to INFO
+1787097478.1058204 [INFO] [rl_controller_hardware-1]: process started with pid [6046]
+1787097478.1063101 [INFO] [tilt_controller_hardware-2]: process started with pid [6048]
+1787097481.9767537 [tilt_controller_hardware-2] [INFO] [1787097481.975772404] [tilt_controller_hardware]: Starting TiltHardware node...

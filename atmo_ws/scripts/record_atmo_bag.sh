@@ -33,6 +33,20 @@ DEFAULT_TOPICS=(
     /fmu/out/vehicle_odometry
     /fmu/out/vehicle_status_v1
     /tilt_vel
+    # Measured tilt angle. Its absence cost the 2026-08-18 post-mortem its
+    # tilt ground truth: phi had to be reconstructed by integrating commanded
+    # /tilt_vel, leaving the S(phi) roll residual unresolvable.
+    /fmu/in/tilt_angle
+    /atmo/rl/policy_action
+    /atmo/rl/observation_state
+    # Post-mixer per-rotor commands. /fmu/in/actuator_motors carries the same
+    # values but ONLY when a command publisher exists, so it is empty in the
+    # shadow profile -- this one is published straight off the policy tick.
+    /atmo/rl/actuator_commands
+    # RAW Motive pose, before mocap_bridge applies mount_yaw. Recorded next to
+    # /atmo/groundtruth_odom so the 180 deg mount correction can be checked
+    # after the fact instead of taken on faith.
+    /vrpn_mocap/${ATMO_MOCAP_BODY:-M4}/pose
     /drive_vel
     /atmo/rl/manual_override
     /atmo/groundtruth_odom
@@ -67,9 +81,12 @@ wait_for_type() {
 # Shadow and sensor profiles deliberately create no command publishers, so a
 # missing /tilt_vel there is correct rather than a fault. Warn and record what
 # does exist instead of refusing.
-if ! wait_for_type /tilt_vel custom_msgs/msg/TiltVel; then
-    echo "Recording without the custom command topics." >&2
-fi
+if [[ "${ATMO_RL_HARDWARE_MODE:-}" == "shadow" ]]; then
+      wait_for_type /atmo/rl/policy_action std_msgs/msg/Float32MultiArray
+  else
+      wait_for_type /tilt_vel custom_msgs/msg/TiltVel
+  fi
+
 
 echo "Recording bag: ${OUTPUT_DIR}"
 echo "Topics:"

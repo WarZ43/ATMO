@@ -1,0 +1,47 @@
+1787097604.2375152 [INFO] [launch]: All log files can be found below /home/m4/.ros/log/2026-08-18-17-00-04-235221-m4-6390
+1787097604.2378602 [INFO] [launch]: Default logging verbosity is set to INFO
+1787097604.3421023 [INFO] [rl_controller_hardware-1]: process started with pid [6423]
+1787097604.3426228 [INFO] [tilt_controller_hardware-2]: process started with pid [6425]
+1787097609.2082105 [tilt_controller_hardware-2] [INFO] [1787097609.207229854] [tilt_controller_hardware]: Starting TiltHardware node...
+1787097643.4901767 [WARNING] [launch]: user interrupted with ctrl-c (SIGINT)
+1787097643.4998868 [tilt_controller_hardware-2] [INFO] [1787097643.499497805] [tilt_controller_hardware]: tilt motor zeroed
+1787097643.5002298 [tilt_controller_hardware-2] Failed to publish log message to rosout: publisher's context is invalid, at ./src/rcl/publisher.c:389
+1787097643.5044153 [tilt_controller_hardware-2] [INFO] [1787097643.503973470] [tilt_controller_hardware]: port closed !
+1787097643.5047112 [tilt_controller_hardware-2] Failed to publish log message to rosout: publisher's context is invalid, at ./src/rcl/publisher.c:389
+1787097643.5279670 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5283928 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5285823 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5287201 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5288384 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5289497 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5290527 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5291581 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5293007 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5294049 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5298049 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5299394 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5300515 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5301638 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5302763 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5303864 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5304825 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5305886 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5306821 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5307753 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5309241 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5310259 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5311236 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5312226 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5313196 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5314131 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5315118 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5316126 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5317047 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5317976 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5318918 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5319836 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5320764 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5321677 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.5322580 [tilt_controller_hardware-2] tilt angle is: 0.00 deg
+1787097643.8211055 [INFO] [tilt_controller_hardware-2]: process has finished cleanly [pid 6425]
+1787097643.9170442 [ERROR] [rl_controller_hardware-1]: process has died [pid 6423, exit code 1, cmd '/home/m4/ATMO_rl/atmo_ws/install/atmo/lib/atmo/rl_controller_hardware --ros-args -r __node:=rl_controller_hardware'].

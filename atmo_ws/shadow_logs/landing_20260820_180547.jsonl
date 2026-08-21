@@ -1,0 +1,1 @@
+{"type": "metadata", "route": "landing", "observation_dim": 529, "action_dim": 7, "policy_path": "/home/m4/ATMO_rl/atmo_ws/policies/atmo_combined_stage1_policy.npz", "policy_loaded": true}

@@ -16,10 +16,11 @@
 #      time pressure. The kill switch and dropping the RL gate stop it too.
 #
 # Usage:
-#   ./atmo_session.sh shadow            # no command publishers at all
+#   ./atmo_session.sh shadow            # no command publishers at all; holds
+#                                       # station at the current pose, bagged
 #   ./atmo_session.sh sensor            # connectivity only
 #   ./atmo_session.sh policy --route takeoff
-#   ./atmo_session.sh action --action-test tilt --action-sign positive
+#   ./atmo_session.sh action --action-test roll --action-sign positive
 #
 # Stop with:  Ctrl-C in the stack window (or the kill switch, or drop the RL gate)
 
@@ -40,6 +41,8 @@ PROFILE:
 
 Options:
   --route takeoff|landing|full combined policy route (default: landing).
+                               Passing this to shadow turns OFF its hover-only
+                               default.
                                full = takeoff, hover ATMO_RL_HOVER_S (3 s),
                                land where it took off. No --ground-z needed:
                                the anchored start pose is the landed z.
@@ -60,6 +63,9 @@ Options:
                                the 12V regulator; see docs/session_state.md.
                                Turn on only after the replacement board is in,
                                behind the battery bypass diode)
+  --hover-only                 hold station in FLIGHT at the CURRENT measured
+                               pose, forever (default ON for shadow). No climb,
+                               no descent. Mutually exclusive with --drive-only.
   --drive-only                 pin the route to DRIVE, never transition
                                (default ON for the ground profile)
   --drive-speed M_S            drive-only reference ground speed (default 0.0)
@@ -78,7 +84,7 @@ ROUTE="landing"
 # Ground runs without mocap by design: the rotors are cut and the reference is
 # synthetic, so there is nothing for a pose to feed. Starting the bridge anyway
 # just fails noisily against a rig that is not there.
-MOCAP="on"
+MOCAP="off"
 # Motive's rigid-body name on this rig. m4-direct-rl streams it as "M4"
 # (/vrpn_mocap/M4/pose) and it is the same Motive install. A wrong name
 # gives no topic and no error.
@@ -97,6 +103,8 @@ KILL_TEST_PASSED="false"
 GROUND_Z="${ATMO_RL_GROUND_Z:-}"
 REFERENCE=""
 DRIVE_ONLY=""
+HOVER_ONLY=""
+PROPS_OFF_BENCH=0
 DRIVE_SPEED="${ATMO_RL_DRIVE_ONLY_SPEED:-0.0}"
 BAG_DIR="${ATMO_BAG_DIR:-${WORKSPACE_DIR}/bags}"
 RECORD_BAG=1
@@ -105,8 +113,8 @@ DETACH=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --route) ROUTE="${2:?}"; shift 2 ;;
-        --route=*) ROUTE="${1#*=}"; shift ;;
+        --route) ROUTE="${2:?}"; ROUTE_EXPLICIT=1; shift 2 ;;
+        --route=*) ROUTE="${1#*=}"; ROUTE_EXPLICIT=1; shift ;;
         --mocap) MOCAP="${2:?}"; MOCAP_EXPLICIT=1; shift 2 ;;
         --mocap=*) MOCAP="${1#*=}"; MOCAP_EXPLICIT=1; shift ;;
         --mocap-body) MOCAP_BODY="${2:?}"; shift 2 ;;
@@ -128,6 +136,9 @@ while [[ $# -gt 0 ]]; do
         --reference=*) REFERENCE="${1#*=}"; shift ;;
         --drive) DRIVE_HW="${2:?}"; shift 2 ;;
         --drive=*) DRIVE_HW="${1#*=}"; shift ;;
+        --props-off-bench) PROPS_OFF_BENCH=1; shift ;;
+        --hover-only) HOVER_ONLY=1; shift ;;
+        --no-hover-only) HOVER_ONLY=0; shift ;;
         --drive-only) DRIVE_ONLY=1; shift ;;
         --no-drive-only) DRIVE_ONLY=0; shift ;;
         --drive-speed) DRIVE_SPEED="${2:?}"; shift 2 ;;
@@ -146,6 +157,16 @@ done
 if [[ "${PROFILE}" == ground && -z "${MOCAP_EXPLICIT:-}" ]]; then
     MOCAP="off"
 fi
+# Shadow defaults to HOVER-ONLY: hold station in FLIGHT at wherever the vehicle
+# currently is, indefinitely. Every named route moves the reference (takeoff
+# climbs, landing descends, full does both), so none of them shows what the
+# policy does when asked to stay put -- which is the question a pre-flight
+# shadow run is asking. Nothing spins either way: shadow creates no command
+# publishers. Pass --route explicitly to get a moving route instead.
+if [[ "${PROFILE}" == shadow && -z "${ROUTE_EXPLICIT:-}" && -z "${HOVER_ONLY}" ]]; then
+    HOVER_ONLY=1
+fi
+[[ -z "${HOVER_ONLY}" ]] && HOVER_ONLY=0
 # --- pose source ----------------------------------------------------------
 # Mirrors m4-direct-rl: probe for live mocap and fall back, rather than
 # assuming. `policy` REFUSES to run on a virtual pose -- flying on a
@@ -153,21 +174,59 @@ fi
 REFERENCE="${REFERENCE:-$([[ "${PROFILE}" == policy ]] && echo mocap || echo auto)}"
 case "${REFERENCE}" in auto|mocap|virtual) ;; *) echo "Bad --reference: ${REFERENCE}" >&2; exit 2 ;; esac
 MOCAP_TOPIC="/vrpn_mocap/${MOCAP_BODY}/pose"
+# The probe runs in THIS shell, which does not source atmo_env.sh (only the
+# tmux windows do, via the path passed to them). Without that, a topic
+# published under a discovery server is invisible here and the probe falls
+# through to `virtual` while the mocap is streaming perfectly -- measured
+# 2026-08-20, /vrpn_mocap/M4/pose live at 119.8 Hz and undetected. Mirror
+# atmo_env.sh's logic for the probe.
+if [[ -n "${ATMO_DDS_DISCOVERY_SERVER:-}" ]]; then
+    export ROS_DISCOVERY_SERVER="${ATMO_DDS_DISCOVERY_SERVER}"
+    # SUPER_CLIENT is a profile, not an env var. Without it the CLI joins as a
+    # plain client and every introspection command returns empty.
+    export FASTRTPS_DEFAULT_PROFILES_FILE="${SCRIPT_DIR}/fastdds_super_client.xml"
+fi
 if [[ "${REFERENCE}" == auto ]]; then
     probe="${ATMO_MOCAP_DETECT_SECONDS:-5}"
     echo "Probing ${MOCAP_TOPIC} for ${probe}s..."
+    # The daemon caches discovery state across profiles: a lookup made before
+    # the discovery-server env was set stays cached and keeps reporting empty.
+    ros2 daemon stop >/dev/null 2>&1 || true
     if timeout "${probe}" ros2 topic echo --once "${MOCAP_TOPIC}" >/dev/null 2>&1; then
         REFERENCE=mocap
         echo "  live mocap detected -> using the measured pose"
     else
         REFERENCE=virtual
         echo "  no mocap -> using virtual dead-reckoned odometry"
+        # Distinguish "no mocap" from "cannot SEE the mocap". A discovery
+        # server listening locally while ATMO_DDS_DISCOVERY_SERVER is unset is
+        # the exact configuration that hides a live topic from this probe.
+        if [[ -z "${ATMO_DDS_DISCOVERY_SERVER:-}" ]] && ss -lun 2>/dev/null | grep -q ":11811 "; then
+            echo "" >&2
+            echo "  WARNING: a Fast DDS discovery server is listening on :11811 but" >&2
+            echo "  ATMO_DDS_DISCOVERY_SERVER is not set, so this probe searched" >&2
+            echo "  plain multicast and would MISS a topic registered there." >&2
+            echo "  If run_mocap_laptop.sh is running, re-run as:" >&2
+            echo "      ATMO_DDS_DISCOVERY_SERVER=<router-ip>:11811 $0 ${PROFILE}" >&2
+            echo "" >&2
+        fi
     fi
 fi
 if [[ "${PROFILE}" == policy && "${REFERENCE}" != mocap ]]; then
-    echo "policy requires live mocap; refusing reference '${REFERENCE}'." >&2
-    echo "Flying on a fabricated position is not a degraded run." >&2
-    exit 2
+    if [[ "${PROPS_OFF_BENCH}" == 1 ]]; then
+        echo "" >&2
+        echo "  PROPS-OFF BENCH OVERRIDE: policy profile on reference" >&2
+        echo "  '${REFERENCE}'. PX4 WILL ARM and the ROTORS WILL SPIN under" >&2
+        echo "  policy command on a FABRICATED position. This is only a bench" >&2
+        echo "  test: PROPS MUST BE OFF and the vehicle restrained. NEVER" >&2
+        echo "  valid for flight." >&2
+        echo "" >&2
+    else
+        echo "policy requires live mocap; refusing reference '${REFERENCE}'." >&2
+        echo "Flying on a fabricated position is not a degraded run." >&2
+        echo "(--props-off-bench overrides for a restrained props-off bench test.)" >&2
+        exit 2
+    fi
 fi
 if [[ "${REFERENCE}" == mocap ]]; then
     # The mocap pose goes STRAIGHT into the observation. PX4's EKF is not in
@@ -292,9 +351,19 @@ PREFIX="${PREFIX} ATMO_MOCAP_BODY=$(printf '%q' "${MOCAP_BODY}")"
 PREFIX="${PREFIX} ATMO_RL_POSE_SOURCE=$(printf '%q' "${POSE_SOURCE}")"
 PREFIX="${PREFIX} ATMO_RL_VIRTUAL_POSE=$(printf '%q' "${VIRTUAL_POSE}")"
 PREFIX="${PREFIX} ATMO_RL_DRIVE_ONLY=$(printf '%q' "${DRIVE_ONLY}")"
+PREFIX="${PREFIX} ATMO_RL_HOVER_ONLY=$(printf '%q' "${HOVER_ONLY}")"
 PREFIX="${PREFIX} ATMO_RL_DRIVE_ONLY_SPEED=$(printf '%q' "${DRIVE_SPEED}")"
 PREFIX="${PREFIX} ATMO_RL_CHANNEL=$(printf '%q' "${ATMO_RL_CHANNEL:-7}")"
 PREFIX="${PREFIX} ATMO_RL_OFFBOARD_CHANNEL=$(printf '%q' "${ATMO_RL_OFFBOARD_CHANNEL:--1}")"
+PREFIX="${PREFIX} ATMO_RL_HARDWARE_MODE=$(printf '%q' "${HARDWARE_MODE}")"
+
+# Mission phase durations and the tilt homing frame are session decisions the
+# operator sets in the calling shell; forward them for the same tmux reason.
+for _fw_var in ATMO_RL_TAKEOFF_S ATMO_RL_HOVER_S ATMO_RL_LANDING_S ATMO_TILT_HOME ATMO_TILT_PRESERVE_ENC ATMO_RL_TERMINAL_HANDOFF; do
+    if [[ -n "${!_fw_var:-}" ]]; then
+        PREFIX="${PREFIX} ${_fw_var}=$(printf '%q' "${!_fw_var}")"
+    fi
+done
 # Same reasoning, higher stakes: the RoboClaw ports default to /dev/ttyACM0
 # and ttyACM1, which are enumeration order rather than identity. If those
 # defaults are silently used and enumeration differs from the last boot, tilt
@@ -334,7 +403,8 @@ fi
 if [[ "${RECORD_BAG}" -eq 1 ]]; then
     output="${BAG_DIR}/atmo_${PROFILE}_$(date +%Y%m%d_%H%M%S)"
     bag=(bash "${SCRIPT_DIR}/record_atmo_bag.sh" "${output}")
-    add_window bag "$(shell_join "${bag[@]}")"
+    add_window bag "${PREFIX} $(shell_join "${bag[@]}")"
+
 fi
 
 # --- operator --------------------------------------------------------------

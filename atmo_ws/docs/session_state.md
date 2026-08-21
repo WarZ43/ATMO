@@ -649,3 +649,170 @@ recoverable). Remote READS of the tilt board (status, encoder, voltage)
 remain fine. Any future automated tilt motion must carry a hard rule:
 if the encoder has not moved within 0.7 s of a command, cut to zero and
 back off -- never hold a stalled motor at duty.
+
+## 2026-08-18 (arena night, final): mission ran, frames verified, morning list
+
+**THE FULL MISSION RAN CLOSED-LOOP ON THE VEHICLE** (ground profile, route
+full, real policy, real mocap, tilt actuating, rotors cut, wheels dead):
+engaged -> drive_to_takeoff (+2.0s) -> takeoff_to_flight (+5.0s) ->
+flight_to_landing (+3.0s) -> landing_to_drive (+3.0s), all on schedule,
+rosbag in bags/atmo_ground_*. Post-landing drive hold pushed tilt to the
+85 deg bound and was correctly blocked. CAVEAT: run was on an UNHOMED
+encoder frame (assume-top) -- angles offset; rule below.
+
+**C1 pose frame VERIFIED by motion (laptop-local bridge + check, vehicle
+unpowered):** z-up confirmed (lift -> z up; suspended rest z ~0.85 m),
+x/y consistent -- an apparent "x reversed" was the vehicle heading ~120 deg
+from Motive +X (nets x -1.23 / y +0.84 decompose exactly). Yaw-CCW
+confirmation still owed. The pose check's printed expectations assume yaw
+~= 0; at any other heading, decompose by the vehicle's heading first.
+
+**The evening's failure chain, each solved:** dead agent after every Jetson
+reboot (start it FIRST); TELEM2 GROUND WIRE broken at the solder joint
+(session forms, data dies -- 37 kB/s tx at FC, trickle at Jetson;
+resoldered); agent/nodes in different DDS worlds (interface.sh now carries
+ATMO_DDS_DISCOVERY_SERVER into the agent); RoboClaw power-up lockout after
+every battery cycle (kill-lever cycle clears); tilt motor OVERHEATED by
+sustained remote stall attempts (recoverable; see the standing rule -- no
+remote tilt actuation, and never hold a stalled motor at duty).
+
+**Worm gear drag is elevated vs 8/14** (duty 60-70 then, 100+ now, worse
+mid-travel). Suspects, in order: reassembly alignment from the repair
+(center distance / preload), shock from the 90 deg overrun, fresh grease.
+Cold-morning check: loosen the worm mount a quarter turn, feel the shaft
+through a slow full cycle (periodic tight spot = bent shaft; uniform =
+depth/preload), re-snug while running slowly.
+
+**MORNING CHECKLIST (no OptiTrack until 19:00):**
+1. Fresh battery. Power up -> transmitter on -> CYCLE KILL LEVER.
+2. Agent first (interface.sh; exports the discovery server itself now).
+3. Worm alignment check, then Motion Studio homing to FLY, SetEncM2(0)
+   there. OPERATOR ONLY. Short bursts, cold motor.
+4. Kill test (lift action test), then the ARMING sequence -- how does this
+   vehicle arm with no position estimate? (Carlo's PX4 notes; never tested.)
+5. Rotor spin-up props off: motor map + spin directions off convention.
+6. 19:00 arena: C2 twist, yaw-CCW confirm, then the flight decision.
+
+RULE: no tilt-actuating session without a verified homing first.
+
+## 2026-08-18 addendum: tilt stall root cause CONFIRMED by the operator
+
+Cold motor + full duty (126) up: moved easily, 3 s operator-run test.
+The evening's "increasing resistance" was THERMAL SELF-SABOTAGE: an
+incremental duty ladder (60 -> 80 -> 100 -> 126) heats the motor at
+sub-breakaway duties without moving it, sapping ~0.4%/degC of torque, so
+each rung arrives weaker than the last would have from cold. RULE: command
+breakaway at the full known-good duty on the FIRST attempt from cold;
+never ladder up; if no encoder motion within 0.7 s, stop and let it cool
+-- retrying hot only digs the hole. Worm drag vs 8/14 may still be partly
+real (alignment check remains on the morning list) but the dramatic
+"nothing moves at any duty" episodes were heat.
+
+## 2026-08-18 (00:30): REAL-WORLD DATA CAPTURED; rotor plan for the morning
+
+**The 5/5/5 mission ran with tilt actuating and is RECORDED**:
+bags/atmo_ground_20260818_002029 (.db3 + metadata.yaml, closed cleanly).
+Takeoff 5 s / hover 5 s / land 5 s via the new ATMO_RL_*_S envs, real
+policy, real mocap, arm started at 85 deg. Operator: "the transformation
+was incredibly clean despite the bad position." Two aborted earlier bags
+(001219, 001827) are junk from mis-set switches; ignore them.
+
+Confirmed cause of the aborted first attempt: THE AGENT WAS DEAD (again,
+post-reboot). The rule is now unavoidable: agent first, verify
+/fmu/out/input_rc flows, THEN launch anything.
+
+## ROTOR SEQUENCE (morning, props OFF, in this order)
+
+0. **POWER COMPATIBILITY GATE, before anything spins: the current packs are
+   6S and the ESCs are NOT rated for 6S.** A 6S spin attempt kills ESCs
+   instantly. Read the ESC rating (label/datasheet), source the correct
+   pack, and confirm the ESCs feed DIRECTLY from the flight battery (not
+   the 12 V regulator). NO rotor work until the right voltage exists.
+1. Kill test (lift action test, first half): armed, rotors at idle, kill
+   lever -> rotors die instantly. Mandatory gate.
+2. Arming path: never tested. RC arm switch maps to a dead channel; the
+   vehicle flies WITHOUT the EKF, so PX4 must arm with no position
+   estimate -- Carlo's PX4 notes hold the config answer. The stack already
+   sends the MAVLink arm command; untested whether PX4 accepts it.
+3. Motor map by touch: barely-above-idle, finger/screwdriver on each bell
+   to feel which corner answers which command. Map is convention-only
+   until this passes.
+4. Spin directions vs the expected CW/CCW pattern (tape flag or visual).
+5. Only after 1-4: props on, restrained, then the 19:00 arena slot and the
+   flight decision.
+
+## 2026-08-18 (arena day, evening): THE VEHICLE FLEW; mixer handedness UNRESOLVED
+
+**Transport root cause found and fixed.** The all-day ~1 s stream stalls
+(RC + odometry freezing together, ~975 ms each, several per minute) were
+TELEM2 serial saturation: payload had crept to 38.4 kB/s against 460800
+baud (~46 kB/s raw), and `uxrce_dds_client status` showed cycle max
+1.01 s -- the FC-side client blocking when the TX buffer filled. NOT the
+resoldered cable (gaps identical after a fresh recrimp; wiggle correlation
+was coincidence). Fixed: `SER_TEL2_BAUD = 921600` (param saved on FC) and
+the agent started with `ATMO_XRCE_BAUD=921600`. Soak after: ZERO gaps in
+2.5 min, and a full mission under load with none. interface.sh default is
+still 460800 -- update it or always pass the env.
+
+**Arming without position: answered.** `policy` profile with
+`--px4-relay on` (the default) feeds the EKF mocap it can't fuse
+(quaternion convention still unresolved) -> `pre_flight_checks_pass:
+False`, `local_position_invalid`, ARM_DISARM result=1 forever. With
+`--px4-relay off` PX4 arms cleanly on the stack's MAVLink command
+(result=0) and flies direct-actuator offboard with no position estimate.
+The EKF is not in the policy loop (pose comes from mocap_bridge), so
+relay-off is the flight configuration until the EV convention is settled.
+
+**Props-off full-mission bench run (policy profile, virtual pose,
+--props-off-bench): PASS.** Armed, all transitions on schedule, rotors
+under policy command, auto-disarm at terminal. The arming path and
+direct-actuator pipeline are proven end to end.
+
+**Flights (all on the real mocap, relay off, props on, tethered):**
+- 200413 (pre yaw flip): ~9.5 s airborne, ~0.4 m of the commanded 1 m,
+  mild yaw bursts (~4 rad/s) concentrated around the landing phase;
+  survivable, landed under the terminal handoff.
+- Operator + team then observed all four motors spinning OPPOSITE the
+  spec handedness; yaw column + spin vector were flipped in
+  rl_landing_stage1_runtime (deployment-side only).
+- 202503 (post flip): lifted off, pitched up within ~2 s, snagged the
+  tether carabiner. No yaw runaway (operator-observed).
+- 205315 (post flip): lifted off, rolled to +81 deg inside the first
+  second, killed instantly. The 40 s at z~4.9 m afterwards in the bag is
+  the vehicle being hoisted on the tether, not flight.
+
+**THE OPEN QUESTION (first gate of next session): is the yaw flip right?**
+Two instant attitude departures post-flip vs one flyable flight pre-flip.
+The flip also negates _ROTOR_SPIN_DIRECTION which feeds the observation
+wrench features -- if wrong, it corrupts roll/pitch stabilization exactly
+like what was seen. Against that: the team's direct observation of motor
+spin directions, and the pre-flip flight's own yaw bursts. DECIDE BY
+MEASUREMENT: restrained roll/pitch/yaw action tests (props on), noting
+which side physically dips per sign, THEN the ulog reconstruction below.
+Do not fly, and do not touch the mixer signs again, before that.
+
+**Data preserved on the laptop** at ~/ATMO/flight_data_20260818/: all
+2026-08-18 rosbags (294 MB) incl. the three flight attempts and last
+night's 5/5/5 ground run. PX4 ulogs still on the FC microSD (one per
+armed session; FC clock may stamp them 1969 -- match by order/size).
+Rosbag caveat: /fmu/in/actuator_motors recording was flaky (2009 msgs in
+200413, 0 in 202503, 533 in 205315) -- use the ulogs for rotor commands.
+The policy's raw 7-dim action is NOT logged anywhere; reconstruct via
+(a) inverting the mixer + motor filter from ulog rotor commands, or
+(b) offline replay: rebuild observations from the recorded mocap/odometry
+and forward-pass the .npz (validate against 200413's recorded rotors
+first). TODO: publish /atmo/rl/action from the node (3-line change).
+
+**Altitude anomaly noted for the replay:** 200413 reached only ~0.4 m of
+the 1.0 m command. (205315's apparent 4.9 m was the tether hoist.)
+
+**Assorted fixes that should not be relearned:** the tilt node's boot
+SetEncM2(0) wiped verified homing until ATMO_TILT_PRESERVE_ENC=1 (commit
+7f557a4); mission phase envs did not survive tmux until forwarded by
+atmo_session.sh; the agent MUST carry ATMO_DDS_DISCOVERY_SERVER or the
+stack sees mocap but no RC (silent gate failure); Motive at the arena was
+VRPN at 169.254.243.238 via link-local on the wired NIC (laptop needs a
+169.254/16 alias); mocap 120 Hz held clean through the WiFi at the arena
+when measured idle, but the 202503 flight window shows repeated 400-800 ms
+holes in the recorded stream -- re-verify the link in the final minute
+before every attempt.

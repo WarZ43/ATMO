@@ -1,0 +1,7 @@
+1787098043.3704126 [INFO] [launch]: All log files can be found below /home/m4/.ros/log/2026-08-18-17-07-23-367848-m4-7278
+1787098043.3708410 [INFO] [launch]: Default logging verbosity is set to INFO
+1787098043.4763198 [INFO] [rl_controller_hardware-1]: process started with pid [7322]
+1787098043.4770939 [INFO] [tilt_controller_hardware-2]: process started with pid [7324]
+1787098047.3449924 [tilt_controller_hardware-2] [INFO] [1787098047.344034139] [tilt_controller_hardware]: Starting TiltHardware node...
+1787098124.4614835 [tilt_controller_hardware-2] [WARN] [1787098124.459094732] [tilt_controller_hardware]: upper tilt software limit reached (85.0 deg >= 85.0 deg); blocking positive tilt command
+1787098125.0376487 [tilt_controller_hardware-2] [WARN] [1787098125.036013676] [tilt_controller_hardware]: upper tilt software limit reached (85.3 deg >= 85.0 deg); blocking positive tilt command

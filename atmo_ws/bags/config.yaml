@@ -1,0 +1,15 @@
+# ros2 bag convert / storage configuration for MCAP
+output_bags:
+  - uri: converted_mcap_bags
+    storage_id: mcap
+    max_bagfile_size: 0        # 0 = unlimited size per file (in bytes)
+    max_bagfile_duration: 0    # 0 = unlimited duration (in seconds)
+    all_topics: true           # Set to false if filtering topics below
+    # topics:
+    #   - /tf
+    #   - /tf_static
+    #   - /camera/image_raw
+    #   - /joint_states
+    # exclude_topics:
+    #   - /diagnostics
+    storage_config_uri: ""     # Optional path to MCAP plugin writer config

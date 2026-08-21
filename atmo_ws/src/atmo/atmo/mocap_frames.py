@@ -51,6 +51,32 @@ def to_z_up(position, quaternion, source_frame):
     return remapped, np.asarray((w, x, -z, y))
 
 
+def apply_mount_yaw(quaternion, yaw_rad):
+    """Rotate the rigid body's own axes by `yaw_rad` about its z.
+
+    For when the Motive rigid body is defined at a different heading from the
+    flight controller and the rotor numbering, which is a mounting fact that
+    cannot always be corrected on the vehicle. The body frame is RELABELLED:
+
+        R_world_from_corrected = R_world_from_streamed . Rz(yaw)
+
+    so the streamed world position is untouched (relabelling the axes does not
+    move the origin), and any body-frame vector derived from the corrected
+    quaternion afterwards -- the twist this bridge differentiates, for instance
+    -- comes out in the corrected frame for free.
+
+    Measured on ATMO 2026-08-20 (ANALYSIS_HANDOFF S.13, CLAIM 1): the streamed
+    body frame sits 178.6-179.9 deg from the FC's across three flights, i.e.
+    the rig is mounted 180 deg out, and nothing downstream removed it. That is
+    the roll inversion that departed log_417.
+    """
+    half = 0.5 * float(yaw_rad)
+    return quat_multiply(
+        np.asarray(quaternion, dtype=float),
+        np.asarray((np.cos(half), 0.0, 0.0, np.sin(half))),
+    )
+
+
 def z_up_to_ned_position(position):
     """north = x, east = -y, down = -z."""
     return (float(position[0]), float(-position[1]), float(-position[2]))

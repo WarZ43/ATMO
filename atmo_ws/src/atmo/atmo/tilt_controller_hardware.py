@@ -80,7 +80,15 @@ class TiltHardware(TiltControllerBase):
         # power cycle can happen with the arm parked on a kill switch and the
         # node has no way to know. Under "fly" it means the fly hard stop,
         # which is only true after a verified homing.
-        self.rc.SetEncM2(self.address,0)
+        #
+        # ATMO_TILT_PRESERVE_ENC=1 skips this zero: the operator has homed
+        # (scripts/home_tilt.py, SetEncM2(0) at the fly stop) and the count
+        # currently on the board is that frame. Without it, launching the
+        # stack silently discarded a verified homing -- measured 2026-08-18:
+        # arm homed at fly, driven to 85 deg, node boot re-zeroed there.
+        # Only combine with ATMO_TILT_HOME=fly.
+        if os.getenv("ATMO_TILT_PRESERVE_ENC", "0") != "1":
+            self.rc.SetEncM2(self.address,0)
         self.reset_encoder = 0
 
         # Set pin functions for motor 2 (M2) to go to zero when it reaches home (limit switch)

@@ -39,8 +39,43 @@ DEFAULT_POLICY_PATH = Path(__file__).resolve().parent / "policies" / f"{POLICY_N
 _NED_TO_ENU = np.array(((0.0, 1.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, -1.0)), dtype=np.float32)
 _FRD_TO_FLU = np.diag((1.0, -1.0, -1.0)).astype(np.float32)
 
+# ROTOR CONTROL MIX -- set from MEASURED authority, operator 2026-08-20.
+#
+# There is ONE frame in this stack: PX4 heading, z-up, standard quad-X, props
+# IN. IsaacLab training, the runtime and PX4 ground truth all use it. The only
+# rotation anywhere in the system is the mocap stream, which arrives 180 deg
+# yawed and is turned back in mocap_bridge (mount_yaw_deg). Nothing else needs
+# converting, and this table needs no frame reasoning at all -- it is just the
+# measured authority of each rotor:
+#
+#   ROLL   rotors 1 (rear-left) and 2 (front-left) are +roll, 0 and 3 are
+#          -roll, taking roll-right as positive. The left pair lifts the left
+#          side, which drops the right -- pure geometry.
+#   PITCH  rotors 0 and 2 (the FRONT pair) pitch up, 1 and 3 pitch down.
+#   YAW    rotors 0 and 1 yaw CW seen from above, 2 and 3 CCW.
+#
+# Two entries changed on 2026-08-20 and both had a stale in-code justification
+# telling the next person not to touch them. Do not restore either:
+#
+#   YAW was flipped in flight on 8/18. That flip was masking a DIFFERENT
+#   defect: the mocap path applied a PX4 odometry conversion on top of data
+#   that was already in this frame, inverting observed yaw, and the flip
+#   cancelled it. That conversion was removed on 2026-08-20 (the mocap path
+#   now calls update_training_frame_state), so the flip had nothing left to
+#   cancel and would have made yaw the newly broken axis.
+#
+#   ROLL was left inverted by ANALYSIS_HANDOFF S.13 step 4, which argued the
+#   mocap mount fix alone corrects it. That argument rests on S.13's own
+#   INFERRED training frame; the measured authority above does not.
+#
+# BENCH CHECK BEFORE FLIGHT, restrained and props off, reading
+# /atmo/rl/actuator_commands (S.13 step 6):
+#   +roll  -> rotors 1 and 2 rise, 0 and 3 fall; vehicle rolls RIGHT
+#   +pitch -> rotors 0 and 2 rise; vehicle pitches UP
+#   +yaw   -> rotors 2 and 3 rise, 0 and 1 fall; FC gyro yaw agrees
+# Roll is the axis that departed log_417. Trust it last.
 _PHYSICAL_ROTOR_CONTROL_MIX = np.array(
-    ((1.0, 1.0, -1.0), (-1.0, -1.0, -1.0), (-1.0, 1.0, 1.0), (1.0, -1.0, 1.0)),
+    ((-1.0, 1.0, -1.0), (1.0, -1.0, -1.0), (1.0, 1.0, 1.0), (-1.0, -1.0, 1.0)),
     dtype=np.float32,
 )
 
@@ -55,11 +90,17 @@ _ARM_ORIGINS_B = np.array(
 _BASE_COM_OFFSET_B = np.array((-0.018276, 0.00049378, 0.068096), dtype=np.float32)
 _ROTOR_ARM_INDEX = np.array((1, 0, 0, 1), dtype=np.int64)  # rotor0..rotor3
 _ROTOR_OFFSETS_ARM = np.array(
-    ((0.16491, -0.13673, 0.069563), (-0.16509, 0.13673, 0.069563),
-     (0.16491, 0.13673, 0.069563), (-0.16509, -0.13673, 0.069562)),
+    (
+        (0.16491, -0.13673, 0.069563),
+        (-0.16509, 0.13673, 0.069563),
+        (0.16491, 0.13673, 0.069563),
+        (-0.16509, -0.13673, 0.069562),
+    ),
     dtype=np.float32,
 )
 _ROTOR_TILT_SIGN = np.array((1.0, -1.0, -1.0, 1.0), dtype=np.float32)
+# Reaction-moment sign along each rotor's thrust axis, so it must move WITH the
+# yaw column above. Props-in (S.12): 0 and 1 are CCW, hence -1 in FLU.
 _ROTOR_SPIN_DIRECTION = np.array((-1.0, -1.0, 1.0, 1.0), dtype=np.float32)
 
 
@@ -109,9 +150,11 @@ def quat_wxyz_to_rotmat(quat: Iterable[float]) -> np.ndarray:
         return np.eye(3, dtype=np.float32)
     w, x, y, z = q / norm
     return np.array(
-        ((1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)),
-         (2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)),
-         (2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y))),
+        (
+            (1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)),
+            (2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)),
+            (2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)),
+        ),
         dtype=np.float32,
     )
 
@@ -128,13 +171,19 @@ def rotmat_to_quat_wxyz(rotmat: np.ndarray) -> np.ndarray:
         index = int(np.argmax(diagonal))
         if index == 0:
             s = math.sqrt(max(1.0 + r[0, 0] - r[1, 1] - r[2, 2], 1e-12)) * 2.0
-            quat = np.array(((r[2, 1] - r[1, 2]) / s, 0.25 * s, (r[0, 1] + r[1, 0]) / s, (r[0, 2] + r[2, 0]) / s), dtype=np.float32)
+            quat = np.array(
+                ((r[2, 1] - r[1, 2]) / s, 0.25 * s, (r[0, 1] + r[1, 0]) / s, (r[0, 2] + r[2, 0]) / s), dtype=np.float32
+            )
         elif index == 1:
             s = math.sqrt(max(1.0 + r[1, 1] - r[0, 0] - r[2, 2], 1e-12)) * 2.0
-            quat = np.array(((r[0, 2] - r[2, 0]) / s, (r[0, 1] + r[1, 0]) / s, 0.25 * s, (r[1, 2] + r[2, 1]) / s), dtype=np.float32)
+            quat = np.array(
+                ((r[0, 2] - r[2, 0]) / s, (r[0, 1] + r[1, 0]) / s, 0.25 * s, (r[1, 2] + r[2, 1]) / s), dtype=np.float32
+            )
         else:
             s = math.sqrt(max(1.0 + r[2, 2] - r[0, 0] - r[1, 1], 1e-12)) * 2.0
-            quat = np.array(((r[1, 0] - r[0, 1]) / s, (r[0, 2] + r[2, 0]) / s, (r[1, 2] + r[2, 1]) / s, 0.25 * s), dtype=np.float32)
+            quat = np.array(
+                ((r[1, 0] - r[0, 1]) / s, (r[0, 2] + r[2, 0]) / s, (r[1, 2] + r[2, 1]) / s, 0.25 * s), dtype=np.float32
+            )
     norm = float(np.linalg.norm(quat))
     return quat / norm if norm > 1e-6 else np.array((1.0, 0.0, 0.0, 0.0), dtype=np.float32)
 
@@ -261,7 +310,11 @@ class LandingStage1Config:
 
     @property
     def observation_dim(self) -> int:
-        return self.observation_history_length * self.history_obs_dim + self.action_history_length * self.action_dim + self.current_obs_dim
+        return (
+            self.observation_history_length * self.history_obs_dim
+            + self.action_history_length * self.action_dim
+            + self.current_obs_dim
+        )
 
     @property
     def target_position(self) -> np.ndarray:
@@ -340,12 +393,14 @@ class LandingActionAdapter:
         raw = np.clip(_action_vector(policy_action, self.cfg.action_dim), -1.0, 1.0)
         semantic = raw.copy()
         semantic[0] = 0.5 * (raw[0] + 1.0)
-        rotor_matrix = np.vstack((
-            np.ones(4, dtype=np.float32),
-            self.cfg.rotor_mix_scale[0] * _PHYSICAL_ROTOR_CONTROL_MIX[:, 0],
-            self.cfg.rotor_mix_scale[1] * _PHYSICAL_ROTOR_CONTROL_MIX[:, 1],
-            self.cfg.rotor_mix_scale[2] * _PHYSICAL_ROTOR_CONTROL_MIX[:, 2],
-        ))
+        rotor_matrix = np.vstack(
+            (
+                np.ones(4, dtype=np.float32),
+                self.cfg.rotor_mix_scale[0] * _PHYSICAL_ROTOR_CONTROL_MIX[:, 0],
+                self.cfg.rotor_mix_scale[1] * _PHYSICAL_ROTOR_CONTROL_MIX[:, 1],
+                self.cfg.rotor_mix_scale[2] * _PHYSICAL_ROTOR_CONTROL_MIX[:, 2],
+            )
+        )
         normalized_rotors = np.clip(np.matmul(rotor_matrix.T, semantic[:4]), 0.0, 1.0).astype(np.float32)
         self.filtered_rotors = self.motor_alpha * normalized_rotors + (1.0 - self.motor_alpha) * self.filtered_rotors
 
@@ -361,7 +416,9 @@ class LandingActionAdapter:
         if requested_tilt < self.cfg.tilt_lower or requested_tilt > self.cfg.tilt_upper:
             tilt_velocity = 0.0
             tilt_action = 0.0
-        self.tilt_angle = float(np.clip(self.tilt_angle + tilt_velocity * self.cfg.policy_dt, self.cfg.tilt_lower, self.cfg.tilt_upper))
+        self.tilt_angle = float(
+            np.clip(self.tilt_angle + tilt_velocity * self.cfg.policy_dt, self.cfg.tilt_lower, self.cfg.tilt_upper)
+        )
         drive = float(raw[5])
         turn = float(self.cfg.wheel_turn_scale * raw[6])
         # Isaac joint order is [wheel1, wheel3, wheel2, wheel0]. Its
@@ -386,7 +443,6 @@ class LandingActionAdapter:
         )
         self._last_command = command
         return command
-
 
 
 def _rotate_x(vector: np.ndarray, angle: float) -> np.ndarray:
@@ -422,18 +478,55 @@ class LandingObservationBuilder:
         self.reference_start_time = time.monotonic()
         self.rng = np.random.default_rng(cfg.random_seed)
         self.observation_delay_steps = cfg.observation_delay_min_steps
-        self.observation_buffer = np.zeros((cfg.observation_history_length + cfg.observation_delay_max_steps + 1, cfg.history_obs_dim), dtype=np.float32)
-        self.current_buffer = np.zeros((cfg.observation_history_length + cfg.observation_delay_max_steps + 1, cfg.current_obs_dim), dtype=np.float32)
+        self.observation_buffer = np.zeros(
+            (cfg.observation_history_length + cfg.observation_delay_max_steps + 1, cfg.history_obs_dim),
+            dtype=np.float32,
+        )
+        self.current_buffer = np.zeros(
+            (cfg.observation_history_length + cfg.observation_delay_max_steps + 1, cfg.current_obs_dim),
+            dtype=np.float32,
+        )
         self.observation_history_index = 0
         self.observation_history_initialized = False
         self.action_history = np.full((cfg.action_history_length, cfg.action_dim), -1.0, dtype=np.float32)
         self.last_debug: Dict[str, Any] = {}
 
     def update_px4_state(self, position, quat_wxyz, linear_velocity, angular_velocity) -> None:
-        self.position = _px4_ned_to_training_vec(position)
-        self.quat_wxyz = _px4_attitude_to_training_quat(quat_wxyz)
-        self.linear_velocity = _px4_ned_to_training_vec(linear_velocity)
-        angular_velocity_b = _px4_frd_to_training_body_vec(angular_velocity)
+        """State from PX4: world NED, body FRD. Converted to the training frame.
+
+        Use this ONLY for data that genuinely came from PX4
+        (`/fmu/out/vehicle_odometry`). For a source that already speaks the
+        training convention -- the mocap bridge does -- call
+        `update_training_frame_state`, which applies nothing.
+
+        This distinction is not cosmetic (ANALYSIS_HANDOFF S.13, 2026-08-20).
+        Until then the mocap path called this method, and the two matrices
+        below were applied to data already in the training frame: it inverted
+        the observed height (measured slope -1.000 against 5.39 m of real
+        climb), swapped observed x with y, and flipped the pitch and yaw
+        senses. `_NED_TO_ENU` is (x, y, z) -> (y, x, -z); `_FRD_TO_FLU` is a
+        180 degree body rotation about x.
+        """
+        self.update_training_frame_state(
+            _px4_ned_to_training_vec(position),
+            _px4_attitude_to_training_quat(quat_wxyz),
+            _px4_ned_to_training_vec(linear_velocity),
+            _px4_frd_to_training_body_vec(angular_velocity),
+        )
+
+    def update_training_frame_state(
+        self, position, quat_wxyz, linear_velocity_w, angular_velocity_b
+    ) -> None:
+        """State already in the training frame: world z-up, body FLU.
+
+        `position` and `linear_velocity_w` are world; `angular_velocity_b` is
+        body, matching the Gazebo odometry convention the policy was trained
+        against and the one `mocap_bridge` publishes.
+        """
+        self.position = np.asarray(position, dtype=np.float32)[:3]
+        self.quat_wxyz = np.asarray(quat_wxyz, dtype=np.float32)[:4]
+        self.linear_velocity = np.asarray(linear_velocity_w, dtype=np.float32)[:3]
+        angular_velocity_b = np.asarray(angular_velocity_b, dtype=np.float32)[:3]
         self.angular_velocity_w = quat_wxyz_to_rotmat(self.quat_wxyz) @ angular_velocity_b
         self.state_seen = True
         if not self.reference_initialized:
@@ -472,8 +565,16 @@ class LandingObservationBuilder:
             + self.observation_delay_steps
             + np.arange(self.cfg.observation_history_length)
         ) % self.observation_buffer.shape[0]
-        current_index = (self.observation_history_index + self.observation_delay_steps) % self.observation_buffer.shape[0]
-        observation = np.concatenate((self.observation_buffer[history_indices].reshape(-1), self.action_history.reshape(-1), self.current_buffer[current_index])).astype(np.float32)
+        current_index = (self.observation_history_index + self.observation_delay_steps) % self.observation_buffer.shape[
+            0
+        ]
+        observation = np.concatenate(
+            (
+                self.observation_buffer[history_indices].reshape(-1),
+                self.action_history.reshape(-1),
+                self.current_buffer[current_index],
+            )
+        ).astype(np.float32)
         observation = np.clip(np.nan_to_num(observation, nan=0.0, posinf=100.0, neginf=-100.0), -100.0, 100.0)
         self.last_debug["obs_norm"] = float(np.linalg.norm(observation))
         self.last_debug["obs_min"] = float(np.min(observation))
@@ -487,25 +588,25 @@ class LandingObservationBuilder:
 
     def _history_observation(self) -> np.ndarray:
         heading_yaw = heading_yaw_from_quat(self.quat_wxyz, self.cfg.forward_yaw_offset)
-        rotmat = rotation_matrix_to_heading_frame(
-            quat_wxyz_to_rotmat(self.quat_wxyz), heading_yaw
-        ).reshape(-1)
-        return np.concatenate((
-            self._noise(
-                to_heading_frame(self.position + self.cfg.virtual_observation_offset, heading_yaw),
-                self.cfg.pos_noise_scale,
-            ),
-            self._noise(rotmat, self.cfg.rot_noise_scale),
-            self._noise(
-                to_heading_frame(self.linear_velocity, heading_yaw),
-                self.cfg.lin_vel_noise_scale,
-            ),
-            self._noise(
-                to_heading_frame(self.angular_velocity_w, heading_yaw),
-                self.cfg.ang_vel_noise_scale,
-            ),
-            self._noise(np.array((self.tilt_angle,), dtype=np.float32), self.cfg.tilt_noise_scale),
-        )).astype(np.float32)
+        rotmat = rotation_matrix_to_heading_frame(quat_wxyz_to_rotmat(self.quat_wxyz), heading_yaw).reshape(-1)
+        return np.concatenate(
+            (
+                self._noise(
+                    to_heading_frame(self.position + self.cfg.virtual_observation_offset, heading_yaw),
+                    self.cfg.pos_noise_scale,
+                ),
+                self._noise(rotmat, self.cfg.rot_noise_scale),
+                self._noise(
+                    to_heading_frame(self.linear_velocity, heading_yaw),
+                    self.cfg.lin_vel_noise_scale,
+                ),
+                self._noise(
+                    to_heading_frame(self.angular_velocity_w, heading_yaw),
+                    self.cfg.ang_vel_noise_scale,
+                ),
+                self._noise(np.array((self.tilt_angle,), dtype=np.float32), self.cfg.tilt_noise_scale),
+            )
+        ).astype(np.float32)
 
     def _current_observation(self) -> np.ndarray:
         reference_position, reference_velocity, reference_accel = self._reference_state()
@@ -520,29 +621,43 @@ class LandingObservationBuilder:
         allocation = self._thrust_wrench_allocation_matrix(wrench)
         thrust_center = self._thrust_center_xy()
         morph_trig = np.array((math.sin(self.tilt_angle), math.cos(self.tilt_angle)), dtype=np.float32)
-        current = np.concatenate((
-            reference_accel,
-            self._noise(pos_error, self.cfg.pos_noise_scale),
-            self._noise(velocity_error, self.cfg.lin_vel_noise_scale),
-            np.zeros(1, dtype=np.float32),
-            np.array((yaw_error,), dtype=np.float32),
-            np.array((-self.angular_velocity_w[2],), dtype=np.float32),
-            wrench,
-            allocation,
-            thrust_center,
-            morph_trig,
-        )).astype(np.float32)
+        current = np.concatenate(
+            (
+                reference_accel,
+                self._noise(pos_error, self.cfg.pos_noise_scale),
+                self._noise(velocity_error, self.cfg.lin_vel_noise_scale),
+                np.zeros(1, dtype=np.float32),
+                np.array((yaw_error,), dtype=np.float32),
+                np.array((-self.angular_velocity_w[2],), dtype=np.float32),
+                wrench,
+                allocation,
+                thrust_center,
+                morph_trig,
+            )
+        ).astype(np.float32)
         if current.size != self.cfg.current_obs_dim:
-            raise RuntimeError(f"Landing current observation has {current.size} values, expected {self.cfg.current_obs_dim}")
-        self.last_debug.update({
-            "position": self.position.copy(), "linear_velocity": self.linear_velocity.copy(),
-            "angular_velocity_w": self.angular_velocity_w.copy(), "reference_position": reference_position.copy(),
-            "reference_velocity": reference_velocity.copy(), "reference_velocity_error": velocity_error.copy(),
-            "reference_accel": reference_accel.copy(), "reference_pos_error": pos_error.copy(),
-            "yaw_error": yaw_error, "wrench_min": float(np.min(wrench)), "wrench_max": float(np.max(wrench)),
-            "allocation_min": float(np.min(allocation)), "allocation_max": float(np.max(allocation)),
-            "tilt_angle": float(self.tilt_angle), "reference_time": self._reference_elapsed(),
-        })
+            raise RuntimeError(
+                f"Landing current observation has {current.size} values, expected {self.cfg.current_obs_dim}"
+            )
+        self.last_debug.update(
+            {
+                "position": self.position.copy(),
+                "linear_velocity": self.linear_velocity.copy(),
+                "angular_velocity_w": self.angular_velocity_w.copy(),
+                "reference_position": reference_position.copy(),
+                "reference_velocity": reference_velocity.copy(),
+                "reference_velocity_error": velocity_error.copy(),
+                "reference_accel": reference_accel.copy(),
+                "reference_pos_error": pos_error.copy(),
+                "yaw_error": yaw_error,
+                "wrench_min": float(np.min(wrench)),
+                "wrench_max": float(np.max(wrench)),
+                "allocation_min": float(np.min(allocation)),
+                "allocation_max": float(np.max(allocation)),
+                "tilt_angle": float(self.tilt_angle),
+                "reference_time": self._reference_elapsed(),
+            }
+        )
         return current
 
     def _reset_reference(self) -> None:
@@ -562,7 +677,11 @@ class LandingObservationBuilder:
                 (self.cfg.reference_end_vx, self.cfg.reference_end_vy, 0.0), dtype=np.float32
             )
         vertical_speed = max(float(self.cfg.reference_vertical_speed), 1e-3)
-        duration = max(abs(float(delta[2])) / vertical_speed, float(np.linalg.norm(delta[:2])) / max(self.cfg.xy_reference_max_speed, 1e-3), self.cfg.xy_reference_min_duration_s)
+        duration = max(
+            abs(float(delta[2])) / vertical_speed,
+            float(np.linalg.norm(delta[:2])) / max(self.cfg.xy_reference_max_speed, 1e-3),
+            self.cfg.xy_reference_min_duration_s,
+        )
         self.reference_duration = duration * self.cfg.trajectory_duration_scale
         self.reference_accel_duration = 0.2 * self.reference_duration + 0.2
         self.reference_decel_duration = 0.2 * self.reference_duration + 0.5
@@ -574,26 +693,36 @@ class LandingObservationBuilder:
             delta
             - 0.5 * self.reference_accel_duration * self.reference_start_velocity
             - 0.5 * self.reference_decel_duration * self.reference_end_velocity
-        ) / (
-            0.5 * self.reference_accel_duration
-            + self.reference_cruise_duration
-            + 0.5 * self.reference_decel_duration
-        )
+        ) / (0.5 * self.reference_accel_duration + self.reference_cruise_duration + 0.5 * self.reference_decel_duration)
         self.reference_accel_end = self.reference_start_position + 0.5 * self.reference_accel_duration * (
             self.reference_start_velocity + self.reference_cruise_velocity
         )
-        self.reference_decel_start = self.reference_accel_end + self.reference_cruise_duration * self.reference_cruise_velocity
-        velocity = self.reference_end_velocity if np.linalg.norm(self.reference_end_velocity[:2]) > 1e-6 else self.reference_start_velocity
-        self.reference_heading = math.atan2(float(velocity[1]), float(velocity[0])) if np.linalg.norm(velocity[:2]) > 1e-6 else math.atan2(float(delta[1]), float(delta[0]))
+        self.reference_decel_start = (
+            self.reference_accel_end + self.reference_cruise_duration * self.reference_cruise_velocity
+        )
+        velocity = (
+            self.reference_end_velocity
+            if np.linalg.norm(self.reference_end_velocity[:2]) > 1e-6
+            else self.reference_start_velocity
+        )
+        self.reference_heading = (
+            math.atan2(float(velocity[1]), float(velocity[0]))
+            if np.linalg.norm(velocity[:2]) > 1e-6
+            else math.atan2(float(delta[1]), float(delta[0]))
+        )
         self.reference_start_time = time.monotonic()
         self.reference_initialized = True
         self.observation_delay_steps = self.cfg.observation_delay_min_steps
         if self.cfg.randomize_reset and self.cfg.observation_delay_max_steps > self.cfg.observation_delay_min_steps:
-            self.observation_delay_steps = int(self.rng.integers(self.cfg.observation_delay_min_steps, self.cfg.observation_delay_max_steps + 1))
+            self.observation_delay_steps = int(
+                self.rng.integers(self.cfg.observation_delay_min_steps, self.cfg.observation_delay_max_steps + 1)
+            )
         virtual_xy = np.zeros(2, dtype=np.float32)
         virtual_z = 0.0
         if self.cfg.randomize_reset:
-            virtual_xy = self.rng.uniform(-self.cfg.initial_virtual_xy_range, self.cfg.initial_virtual_xy_range, 2).astype(np.float32)
+            virtual_xy = self.rng.uniform(
+                -self.cfg.initial_virtual_xy_range, self.cfg.initial_virtual_xy_range, 2
+            ).astype(np.float32)
             virtual_z = float(self.rng.uniform(*self.cfg.initial_virtual_z_range))
         self.cfg.virtual_observation_offset = np.array((virtual_xy[0], virtual_xy[1], virtual_z), dtype=np.float32)
 
@@ -608,26 +737,32 @@ class LandingObservationBuilder:
         tau5 = tau4 * tau
         tau6 = tau5 * tau
         tau7 = tau6 * tau
-        shape = 35*tau4 - 84*tau5 + 70*tau6 - 20*tau7
-        shape_rate = 140*tau3 - 420*tau4 + 420*tau5 - 140*tau6
-        shape_accel = 420*tau2 - 1680*tau3 + 2100*tau4 - 840*tau5
-        start_shape = tau - 20*tau4 + 45*tau5 - 36*tau6 + 10*tau7
-        start_rate = 1 - 80*tau3 + 225*tau4 - 216*tau5 + 70*tau6
-        start_accel = -240*tau2 + 900*tau3 - 1080*tau4 + 420*tau5
-        end_shape = -15*tau4 + 39*tau5 - 34*tau6 + 10*tau7
-        end_rate = -60*tau3 + 195*tau4 - 204*tau5 + 70*tau6
-        end_accel = -180*tau2 + 780*tau3 - 1020*tau4 + 420*tau5
+        shape = 35 * tau4 - 84 * tau5 + 70 * tau6 - 20 * tau7
+        shape_rate = 140 * tau3 - 420 * tau4 + 420 * tau5 - 140 * tau6
+        shape_accel = 420 * tau2 - 1680 * tau3 + 2100 * tau4 - 840 * tau5
+        start_shape = tau - 20 * tau4 + 45 * tau5 - 36 * tau6 + 10 * tau7
+        start_rate = 1 - 80 * tau3 + 225 * tau4 - 216 * tau5 + 70 * tau6
+        start_accel = -240 * tau2 + 900 * tau3 - 1080 * tau4 + 420 * tau5
+        end_shape = -15 * tau4 + 39 * tau5 - 34 * tau6 + 10 * tau7
+        end_rate = -60 * tau3 + 195 * tau4 - 204 * tau5 + 70 * tau6
+        end_accel = -180 * tau2 + 780 * tau3 - 1020 * tau4 + 420 * tau5
         delta = end - start
         return (
             start + delta * shape + start_velocity * duration * start_shape + end_velocity * duration * end_shape,
             delta * (shape_rate / max(duration, 1e-6)) + start_velocity * start_rate + end_velocity * end_rate,
-            delta * (shape_accel / max(duration * duration, 1e-6)) + start_velocity * (start_accel / max(duration, 1e-6)) + end_velocity * (end_accel / max(duration, 1e-6)),
+            delta * (shape_accel / max(duration * duration, 1e-6))
+            + start_velocity * (start_accel / max(duration, 1e-6))
+            + end_velocity * (end_accel / max(duration, 1e-6)),
         )
 
     def _reference_state(self):
         t = self._reference_elapsed()
         if t >= self.reference_duration:
-            return self.reference_target_position + self.reference_end_velocity * (t - self.reference_duration), self.reference_end_velocity.copy(), np.zeros(3, dtype=np.float32)
+            return (
+                self.reference_target_position + self.reference_end_velocity * (t - self.reference_duration),
+                self.reference_end_velocity.copy(),
+                np.zeros(3, dtype=np.float32),
+            )
         if t <= self.reference_accel_duration:
             return self._seventh_order_segment(
                 self.reference_start_position,
@@ -674,17 +809,29 @@ class LandingObservationBuilder:
         axes_w = axes_b @ rotmat.T
         control_mix = np.vstack((np.ones(4, dtype=np.float32), 0.5 * _PHYSICAL_ROTOR_CONTROL_MIX.T)).astype(np.float32)
         force_w = self.cfg.rotor_kT * control_mix[:, :, None] * axes_w[None, :, :]
-        moment_w = _ROTOR_SPIN_DIRECTION[None, :, None] * self.cfg.rotor_kM * self.cfg.rotor_kT * control_mix[:, :, None] * axes_w[None, :, :]
+        moment_w = (
+            _ROTOR_SPIN_DIRECTION[None, :, None]
+            * self.cfg.rotor_kM
+            * self.cfg.rotor_kT
+            * control_mix[:, :, None]
+            * axes_w[None, :, :]
+        )
         torque_w = np.cross(rotor_positions_w[None, :, :], force_w) + moment_w
         force = np.sum(force_w, axis=1) / max(self.cfg.nominal_total_kT, 1e-6)
-        torque_scale = max(self.cfg.nominal_total_kT * float(np.mean(np.linalg.norm(rotor_positions_b[:, :2], axis=1))), 1e-3)
+        torque_scale = max(
+            self.cfg.nominal_total_kT * float(np.mean(np.linalg.norm(rotor_positions_b[:, :2], axis=1))), 1e-3
+        )
         torque = np.sum(torque_w, axis=1) / torque_scale
         return np.concatenate((force, torque), axis=1).reshape(-1).astype(np.float32)
 
     def _thrust_wrench_allocation_matrix(self, wrench: np.ndarray) -> np.ndarray:
         matrix = wrench.reshape(4, 6)
         gram = matrix @ matrix.T + self.cfg.wrench_allocation_damping * np.eye(4, dtype=np.float32)
-        return np.clip(np.linalg.solve(gram, matrix), -self.cfg.wrench_allocation_clip, self.cfg.wrench_allocation_clip).reshape(-1).astype(np.float32)
+        return (
+            np.clip(np.linalg.solve(gram, matrix), -self.cfg.wrench_allocation_clip, self.cfg.wrench_allocation_clip)
+            .reshape(-1)
+            .astype(np.float32)
+        )
 
     def _thrust_center_xy(self) -> np.ndarray:
         positions, _ = self._rotor_geometry()
@@ -696,7 +843,9 @@ class _RlGamesActor(nn.Module if nn is not None else object):
         super().__init__()
         if nn is None:
             raise RuntimeError("PyTorch is not available")
-        self.actor_mlp = nn.Sequential(nn.Linear(obs_dim, 256), nn.ELU(), nn.Linear(256, 128), nn.ELU(), nn.Linear(128, 64), nn.ELU())
+        self.actor_mlp = nn.Sequential(
+            nn.Linear(obs_dim, 256), nn.ELU(), nn.Linear(256, 128), nn.ELU(), nn.Linear(128, 64), nn.ELU()
+        )
         self.mu = nn.Linear(64, action_dim)
 
     def forward(self, obs: Any) -> Any:
@@ -749,12 +898,12 @@ class PolicyRunner:
         try:
             checkpoint = torch.load(str(self.cfg.policy_path), map_location=self.device, weights_only=False)
             model = _RlGamesActor(self.cfg.observation_dim, self.cfg.action_dim)
-            state = checkpoint.get("model", checkpoint.get("state_dict", checkpoint)) if isinstance(checkpoint, dict) else checkpoint.state_dict()
-            tensors = {
-                key: value.detach().cpu()
-                for key, value in self._flatten(state)
-                if torch.is_tensor(value)
-            }
+            state = (
+                checkpoint.get("model", checkpoint.get("state_dict", checkpoint))
+                if isinstance(checkpoint, dict)
+                else checkpoint.state_dict()
+            )
+            tensors = {key: value.detach().cpu() for key, value in self._flatten(state) if torch.is_tensor(value)}
             layers = (
                 (model.actor_mlp[0], (256, self.cfg.observation_dim), ("actor_mlp",)),
                 (model.actor_mlp[2], (128, 256), ("actor_mlp",)),
@@ -819,16 +968,18 @@ class PolicyRunner:
 
     def _find_normalizer(self, items, names):
         for key, value in items:
-            if torch.is_tensor(value) and value.numel() == self.cfg.observation_dim and any(name in key.lower() for name in names):
+            if (
+                torch.is_tensor(value)
+                and value.numel() == self.cfg.observation_dim
+                and any(name in key.lower() for name in names)
+            ):
                 return value.detach().cpu()
         return None
 
     @staticmethod
     def _select_actor_tensor(tensors, shape, preferred_tokens, used):
         candidates = [
-            (key, value)
-            for key, value in tensors.items()
-            if key not in used and tuple(value.shape) == tuple(shape)
+            (key, value) for key, value in tensors.items() if key not in used and tuple(value.shape) == tuple(shape)
         ]
         for token in preferred_tokens:
             for key, _ in candidates:

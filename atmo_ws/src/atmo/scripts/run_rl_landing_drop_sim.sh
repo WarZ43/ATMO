@@ -504,7 +504,7 @@ fi
 set +u
 source "${ATMO_WS}/install/setup.bash"
 set -u
-export ATMO_RL_POLICY_PATH="${ATMO_RL_POLICY_PATH:-$HOME/policies/atmo_combined_stage1.pth}"
+export ATMO_RL_POLICY_PATH="${ATMO_RL_POLICY_PATH:-$HOME/policies/atmo_combined_stage1_policy.npz}"
 export ATMO_RL_LOG_ACTIONS=1
 export ATMO_RL_LOG_OBS=1
 export ATMO_RL_LOG_INTERVAL_S="${ATMO_RL_LOG_INTERVAL_S:-2.0}"

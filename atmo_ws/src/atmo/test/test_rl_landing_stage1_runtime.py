@@ -147,7 +147,13 @@ class LandingStage1ContractTest(unittest.TestCase):
         action[1] = 0.1
         action[5:] = (0.1, 0.2)
         command = adapter.pre_physics_step(action)
-        np.testing.assert_allclose(command.rotors_unfiltered, (0.55, 0.45, 0.45, 0.55), atol=1e-6)
+        # A POSITIVE ROLL COMMAND MUST RAISE THE LEFT PAIR. Rotors 1 (rear-left)
+        # and 2 (front-left) are the left side, so lifting them rolls the right
+        # side down -- roll-right, which is positive. Operator-measured roll
+        # authority 2026-08-20, and Ioannis' S_func roll (-,+,+,-) agrees.
+        # This expectation was (0.55, 0.45, 0.45, 0.55) until then, pinning the
+        # inverted column that departed log_417. Do not "restore" it.
+        np.testing.assert_allclose(command.rotors_unfiltered, (0.45, 0.55, 0.55, 0.45), atol=1e-6)
         np.testing.assert_allclose(command.wheel_efforts, (-0.2, 0.0, 0.0, -0.2), atol=1e-6)
 
         action[5:] = (1.0, 1.0)
@@ -276,3 +282,34 @@ class LandingStage1ContractTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_training_frame_state_applies_no_conversion():
+    """The mocap path must not be run through PX4's NED/FRD conversion.
+
+    Regression for ANALYSIS_HANDOFF S.13 (2026-08-20): mocap_odom_callback used
+    to call update_px4_state(), which inverted the observed height, swapped x
+    with y, and flipped the pitch and yaw senses.
+    """
+    import numpy as np
+
+    from atmo.rl_combined_runtime import CombinedObservationBuilder, CombinedStage1Config
+
+    builder = CombinedObservationBuilder(CombinedStage1Config())
+    position = np.array((1.0, 2.0, 3.0))
+    level = np.array((1.0, 0.0, 0.0, 0.0))
+    velocity_w = np.array((0.4, -0.5, 0.6))
+    angular_b = np.array((0.01, -0.02, 0.03))
+
+    builder.update_training_frame_state(position, level, velocity_w, angular_b)
+    assert np.allclose(builder.position, position), "position must pass through"
+    assert builder.position[2] > 0.0, "height must not be negated"
+    assert np.allclose(builder.linear_velocity, velocity_w)
+    assert np.allclose(builder.quat_wxyz, level)
+    # level attitude: body rates pass straight into the world frame
+    assert np.allclose(builder.angular_velocity_w, angular_b, atol=1e-6)
+
+    # and the PX4 entry point still converts, for the source that needs it
+    px4 = CombinedObservationBuilder(CombinedStage1Config())
+    px4.update_px4_state(position, level, velocity_w, angular_b)
+    assert np.allclose(px4.position, (2.0, 1.0, -3.0)), "PX4 path still NED->ENU"

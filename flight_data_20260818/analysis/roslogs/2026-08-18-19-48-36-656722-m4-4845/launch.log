@@ -1,0 +1,15 @@
+1787107716.6621015 [INFO] [launch]: All log files can be found below /home/m4/.ros/log/2026-08-18-19-48-36-656722-m4-4845
+1787107716.6624963 [INFO] [launch]: Default logging verbosity is set to INFO
+1787107716.7784698 [INFO] [rl_controller_hardware-1]: process started with pid [4890]
+1787107716.7790256 [INFO] [tilt_controller_hardware-2]: process started with pid [4892]
+1787107720.6145546 [tilt_controller_hardware-2] [INFO] [1787107720.613874248] [tilt_controller_hardware]: Starting TiltHardware node...
+1787107749.6968133 [tilt_controller_hardware-2] [WARN] [1787107749.696055336] [tilt_controller_hardware]: upper tilt software limit reached (85.0 deg >= 85.0 deg); blocking positive tilt command
+1787107750.1982336 [tilt_controller_hardware-2] [WARN] [1787107750.197264725] [tilt_controller_hardware]: upper tilt software limit reached (85.1 deg >= 85.0 deg); blocking positive tilt command
+1787107750.8311725 [tilt_controller_hardware-2] [WARN] [1787107750.830419520] [tilt_controller_hardware]: upper tilt software limit reached (85.1 deg >= 85.0 deg); blocking positive tilt command
+1787107751.7109611 [tilt_controller_hardware-2] [WARN] [1787107751.709904430] [tilt_controller_hardware]: upper tilt software limit reached (85.1 deg >= 85.0 deg); blocking positive tilt command
+1787107752.2146893 [tilt_controller_hardware-2] [WARN] [1787107752.213894326] [tilt_controller_hardware]: upper tilt software limit reached (85.1 deg >= 85.0 deg); blocking positive tilt command
+1787107753.6031904 [tilt_controller_hardware-2] [WARN] [1787107753.602427535] [tilt_controller_hardware]: upper tilt software limit reached (85.0 deg >= 85.0 deg); blocking positive tilt command
+1787107754.2140353 [tilt_controller_hardware-2] [WARN] [1787107754.213095090] [tilt_controller_hardware]: upper tilt software limit reached (85.1 deg >= 85.0 deg); blocking positive tilt command
+1787107754.7243741 [tilt_controller_hardware-2] [WARN] [1787107754.723634191] [tilt_controller_hardware]: upper tilt software limit reached (85.1 deg >= 85.0 deg); blocking positive tilt command
+1787107755.2575421 [tilt_controller_hardware-2] [WARN] [1787107755.256940412] [tilt_controller_hardware]: upper tilt software limit reached (85.1 deg >= 85.0 deg); blocking positive tilt command
+1787107755.8409588 [tilt_controller_hardware-2] [WARN] [1787107755.840216546] [tilt_controller_hardware]: upper tilt software limit reached (85.1 deg >= 85.0 deg); blocking positive tilt command

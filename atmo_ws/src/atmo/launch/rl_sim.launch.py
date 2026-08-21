@@ -19,6 +19,8 @@ def generate_launch_description():
                 '/fmu/in/actuator_motors',
                 '/fmu/out/vehicle_local_position_groundtruth',
                 '/fmu/out/vehicle_attitude_groundtruth',
+                '/fmu/out/vehicle_angular_velocity_groundtruth',
+                '/atmo/rl/policy_action',
             ],
             output='screen',
         ),

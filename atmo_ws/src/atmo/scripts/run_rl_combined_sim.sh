@@ -12,7 +12,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PACKAGE_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 export ATMO_RL_ROUTE="${ROUTE}"
-export ATMO_RL_POLICY_PATH="${ATMO_RL_POLICY_PATH:-$HOME/policies/atmo_combined_stage1.pth}"
+export ATMO_RL_POLICY_PATH="${ATMO_RL_POLICY_PATH:-$HOME/policies/atmo_combined_stage1_policy.npz}"
 export ATMO_RL_RANDOMIZE_RESET=0
 export ATMO_RL_SIM_ROTOR_THRUST_SCALE="${ATMO_RL_SIM_ROTOR_THRUST_SCALE:-1.0}"
 if [[ "${ROUTE}" == "takeoff" ]]; then

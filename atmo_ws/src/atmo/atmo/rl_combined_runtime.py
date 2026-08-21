@@ -138,7 +138,7 @@ def sample_profile(route_name: str, deterministic: bool, seed: int) -> dict[str,
 
 @dataclass
 class CombinedStage1Config(LandingStage1Config):
-    policy_path: Path = Path(os.path.expanduser(os.getenv("ATMO_RL_POLICY_PATH", "~/policies/atmo_combined_stage1.pth")))
+    policy_path: Path = Path(os.path.expanduser(os.getenv("ATMO_RL_POLICY_PATH", "~/policies/atmo_combined_stage1_policy.npz")))
     # Four phase one-hots PLUS the signed phase-event timer. The contract has
     # always said 5 (['drive','takeoff','flight','landing','phase_event_time_s'])
     # and this runtime built only the 4 one-hots, which is the 528-vs-529
@@ -194,6 +194,28 @@ class CombinedObservationBuilder(LandingObservationBuilder):
         # which is the honest default: it asks the policy to stay put and
         # makes any drift its own doing.
         self.drive_only_speed = float(os.getenv("ATMO_RL_DRIVE_ONLY_SPEED", "0.0"))
+        # HOVER-ONLY: hold station in FLIGHT at the measured pose, forever.
+        #
+        # The flight-side counterpart to drive_only. All three routes MOVE the
+        # reference -- takeoff climbs, landing descends, full does both -- so
+        # none of them answers "what does the policy do if asked to stay
+        # exactly where it is?". That is what a shadow run before a flight is
+        # actually asking, and it is the only case where the reference error
+        # starts at zero, so any command you see is the policy reacting to the
+        # vehicle rather than chasing a moving setpoint.
+        #
+        # Anchors on the measured pose INCLUDING its z: no climb, no descent.
+        self.hover_only = os.getenv("ATMO_RL_HOVER_ONLY", "0").lower() in {
+            "1", "true", "yes", "on"}
+        if self.hover_only and self.drive_only:
+            raise ValueError("ATMO_RL_HOVER_ONLY and ATMO_RL_DRIVE_ONLY are mutually exclusive")
+        if self.hover_only:
+            # LANDING_ROUTE is the branch that STARTS in FLIGHT; the hold is
+            # then a landing that never begins (see flight_duration in
+            # anchor_fixed_vertical_route).
+            self.route = LANDING_ROUTE
+            self.route_name = "landing"
+            self.mode = FLIGHT
         if self.drive_only:
             self.route = TAKEOFF_ROUTE
             self.route_name = "takeoff"
@@ -226,10 +248,10 @@ class CombinedObservationBuilder(LandingObservationBuilder):
         self.flight_heading = heading
         self.reference_heading = heading
         self.vertical_trajectory = True
-        self.drive_duration = 2.0
-        self.takeoff_duration = 3.0
-        self.flight_duration = 3.0
-        self.landing_duration = 3.0
+        self.drive_duration = float(os.getenv("ATMO_RL_DRIVE_S", "2.0"))
+        self.takeoff_duration = float(os.getenv("ATMO_RL_TAKEOFF_S", "3.0"))
+        self.flight_duration = float(os.getenv("ATMO_RL_FLIGHT_S", "3.0"))
+        self.landing_duration = float(os.getenv("ATMO_RL_LANDING_S", "3.0"))
         self.drive_start_velocity = zero.copy()
         self.drive_velocity = zero.copy()
         self.takeoff_end_velocity = zero.copy()
@@ -268,6 +290,17 @@ class CombinedObservationBuilder(LandingObservationBuilder):
             self.landing_position = np.array(
                 (position[0], position[1], float(landing_height)), dtype=np.float32
             )
+            self.mode = FLIGHT
+
+        if self.hover_only:
+            # Hold the anchored pose, z included, and never hand over to
+            # LANDING: flight_duration is parked past any real run so
+            # _transition_mode's `phase_time >= self.flight_duration` never
+            # fires -- the same trick drive_only uses on drive_duration.
+            self.landing_start = position.copy()
+            self.landing_position = position.copy()
+            self.landing_start_velocity = zero.copy()
+            self.flight_duration = 1.0e6
             self.mode = FLIGHT
 
         self.phase_elapsed_s = 0.0
