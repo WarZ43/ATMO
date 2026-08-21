@@ -28,7 +28,7 @@ else
 fi
 if [[ -n "${ROS_DISCOVERY_SERVER:-}" && "${ROS_DISCOVERY_SERVER}" == "${ATMO_DDS_DISCOVERY_SERVER:-}" ]]; then
     # Deliberate: the dual-homed laptop topology runs a discovery server
-    # (see docs/optitrack_bringup.md); atmo_env.sh sets both variables
+    # (see the README); atmo_env.sh sets both variables
     # together. A LEFTOVER server -- set without ATMO_DDS_DISCOVERY_SERVER --
     # still fails below, which is the failure mode this check exists for.
     note "ROS_DISCOVERY_SERVER" "${ROS_DISCOVERY_SERVER} (deliberate, matches ATMO_DDS_DISCOVERY_SERVER)"

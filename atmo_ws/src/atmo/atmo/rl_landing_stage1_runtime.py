@@ -64,7 +64,7 @@ _FRD_TO_FLU = np.diag((1.0, -1.0, -1.0)).astype(np.float32)
 #   now calls update_training_frame_state), so the flip had nothing left to
 #   cancel and would have made yaw the newly broken axis.
 #
-#   ROLL was left inverted by ANALYSIS_HANDOFF S.13 step 4, which argued the
+#   ROLL was left inverted by the 2026-08-20 frame analysis, step 4, which argued the
 #   mocap mount fix alone corrects it. That argument rests on S.13's own
 #   INFERRED training frame; the measured authority above does not.
 #
@@ -499,7 +499,7 @@ class LandingObservationBuilder:
         training convention -- the mocap bridge does -- call
         `update_training_frame_state`, which applies nothing.
 
-        This distinction is not cosmetic (ANALYSIS_HANDOFF S.13, 2026-08-20).
+        This distinction is not cosmetic (2026-08-20 frame analysis).
         Until then the mocap path called this method, and the two matrices
         below were applied to data already in the training frame: it inverted
         the observed height (measured slope -1.000 against 5.39 m of real

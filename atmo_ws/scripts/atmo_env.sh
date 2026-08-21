@@ -99,7 +99,7 @@ fi
 # ch9 (index 8), the offboard gate's inherited default, has never had a
 # switch on it -- the channel map came from a Futaba T18SZ and the
 # transmitter is a T14SG. -1 selects the single-gate ratchet, which cycles
-# the RL switch twice instead. See docs/session_state.md.
+# the RL switch twice instead. See the README.
 export ATMO_RL_CHANNEL="${ATMO_RL_CHANNEL:-7}"
 export ATMO_RL_OFFBOARD_CHANNEL="${ATMO_RL_OFFBOARD_CHANNEL:--1}"
 

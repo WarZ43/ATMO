@@ -1362,7 +1362,7 @@ class RLCombinedHardware(Node):
         # body-frame twist -- so no frame conversion belongs here. Calling
         # update_px4_state() instead (as this did until 2026-08-20) applied
         # PX4's NED->ENU and FRD->FLU on top of it: height inverted, x swapped
-        # with y, pitch and yaw senses flipped. ANALYSIS_HANDOFF S.13.
+        # with y, pitch and yaw senses flipped (2026-08-20 frame analysis).
         self.observations.update_training_frame_state(position, quaternion, velocity_world, angular_body)
         self.last_odometry_time = time.monotonic()
         self._mark_sensor("mocap_odom")

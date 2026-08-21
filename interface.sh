@@ -19,7 +19,7 @@
 # `create_topic` / `create_datawriter`, then quiet. Repeated
 # `session re-established` means the link is too fast or too marginal.
 #
-# See atmo_ws/docs/px4_topics.md for the measured configuration.
+# See the README for the measured configuration.
 
 set -euo pipefail
 

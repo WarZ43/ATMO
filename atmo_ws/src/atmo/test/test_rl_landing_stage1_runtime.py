@@ -287,7 +287,7 @@ if __name__ == "__main__":
 def test_training_frame_state_applies_no_conversion():
     """The mocap path must not be run through PX4's NED/FRD conversion.
 
-    Regression for ANALYSIS_HANDOFF S.13 (2026-08-20): mocap_odom_callback used
+    Regression for the 2026-08-20 frame analysis: mocap_odom_callback used
     to call update_px4_state(), which inverted the observed height, swapped x
     with y, and flipped the pitch and yaw senses.
     """

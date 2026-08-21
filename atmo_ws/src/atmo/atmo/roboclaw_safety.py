@@ -24,7 +24,7 @@ import os
 DEFAULT_ADDRESS = 0x80
 
 # 0-BASED indices into InputRc.values. Same convention and same measured values
-# as rl_controller_hardware; see docs/session_state.md.
+# as rl_controller_hardware; see the README.
 RL_CHANNEL = int(os.getenv("ATMO_RL_CHANNEL", "7"))
 KILL_CHANNEL = int(os.getenv("ATMO_KILL_CHANNEL", "12"))
 RC_MAX = int(os.getenv("ATMO_RL_RC_MAX", "1934"))

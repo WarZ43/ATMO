@@ -19,7 +19,7 @@ adds, each of which cost time on the m4-direct-rl bring-up:
 FRAME CONVENTIONS ARE ASSUMPTIONS UNTIL CONFIRMED BY MOTION. Motive can stream
 either y-up (its default) or z-up (configurable, and what the m4 rig used).
 Choose with `source_frame`. Verify with `hardware_optitrack_check.py` and the
-Stage C gates in `docs/optitrack_bringup.md` -- move the vehicle by hand in each
+Stage C gates in the README -- move the vehicle by hand in each
 axis and confirm the sign, every session. Never trust the label.
 
 Note on the PX4 quaternion: `relay_mocap.py` mapped the body quaternion to NED

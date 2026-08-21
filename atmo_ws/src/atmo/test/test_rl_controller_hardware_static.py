@@ -168,7 +168,7 @@ class CombinedHardwareStaticTest(unittest.TestCase):
         )
 
     def test_versioned_topic_names_are_used_where_the_firmware_needs_them(self):
-        # Measured on Cube Orange / PX4 1.17.0; see docs/px4_topics.md.
+        # Measured on Cube Orange / PX4 1.17.0; see the README.
         self.assertIn('"vehicle_status": "/fmu/out/vehicle_status_v1"', TOPICS_SOURCE)
         self.assertIn('"battery_status": "/fmu/out/battery_status_v1"', TOPICS_SOURCE)
         # ...and NOT where it does not. These are unversioned on 1.17, and

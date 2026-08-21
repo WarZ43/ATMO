@@ -8,7 +8,7 @@ commit, and only then commands the motors.
 The printing-first order is the point. A test that shows you the number after
 the hardware moves confirms only that motion occurred, not that its direction
 matched the prediction -- which is how the m4 bring-up recorded a passing gate
-that was inverted. See docs/hardware_bringup.md, "The one rule".
+that was inverted. See the README, "The one rule".
 
 Talks to the RoboClaws directly rather than through ROS, so exactly one
 actuator group moves and nothing else can command anything. Rotor slots are
@@ -75,7 +75,7 @@ TILT_PORT = os.getenv("ATMO_TILT_ROBOCLAW",
 DRIVE_PORT = os.getenv("ATMO_DRIVE_ROBOCLAW",
                        "/dev/serial/by-path/platform-3610000.usb-usb-0:2.2:1.0")
 
-# Measured on the vehicle 2026-08-14. See docs/session_state.md.
+# Measured on the vehicle 2026-08-14. See the README.
 PHYSICAL = {
     ("drive", "ForwardM1"): "RIGHT wheel -> vehicle FORWARD",
     ("drive", "BackwardM1"): "RIGHT wheel -> vehicle BACKWARD",

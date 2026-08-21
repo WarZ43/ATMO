@@ -13,7 +13,7 @@ and why `warn_missing()` exists: a topic that is not on the graph should say so
 at startup rather than at the worst moment.
 
 Every name is overridable by environment variable, so a firmware change is a
-config edit rather than a code change. See docs/px4_topics.md for the full
+config edit rather than a code change. See the README for the full
 measured inventory and how to re-take it.
 """
 
@@ -28,7 +28,7 @@ _TOPICS = {
     "vehicle_visual_odometry": "/fmu/in/vehicle_visual_odometry",
     "trajectory_setpoint": "/fmu/in/trajectory_setpoint",
     "vehicle_thrust_setpoint": "/fmu/in/vehicle_thrust_setpoint",
-    # NOT in this firmware's dds_topics.yaml -- see docs/px4_topics.md. It
+    # NOT in this firmware's dds_topics.yaml -- see the README. It
     # still works node-to-node (TiltControllerBase publishes it, the RL
     # runtime subscribes), but PX4 itself never receives the tilt angle.
     "tilt_angle": "/fmu/in/tilt_angle",
@@ -110,6 +110,6 @@ def warn_missing(node, logicals):
             "PX4 topics not on the graph: "
             + ", ".join("%s (expected %s)" % pair for pair in missing)
             + ". If these stay absent, the firmware names them differently -- "
-            "see docs/px4_topics.md and override with ATMO_PX4_TOPIC_<NAME>."
+            "see the README and override with ATMO_PX4_TOPIC_<NAME>."
         )
     return missing

@@ -65,7 +65,7 @@ def apply_mount_yaw(quaternion, yaw_rad):
     quaternion afterwards -- the twist this bridge differentiates, for instance
     -- comes out in the corrected frame for free.
 
-    Measured on ATMO 2026-08-20 (ANALYSIS_HANDOFF S.13, CLAIM 1): the streamed
+    Measured on ATMO 2026-08-20 (2026-08-20 frame analysis, CLAIM 1): the streamed
     body frame sits 178.6-179.9 deg from the FC's across three flights, i.e.
     the rig is mounted 180 deg out, and nothing downstream removed it. That is
     the roll inversion that departed log_417.

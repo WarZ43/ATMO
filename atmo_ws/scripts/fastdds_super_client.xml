@@ -4,7 +4,7 @@
 
   Without this, a plain discovery-server CLIENT learns only the endpoints it
   needs, so `ros2 node list` and `ros2 topic list` return empty even while data
-  flows normally. See docs/optitrack_bringup.md, "The CLI goes blind under a
+  flows normally. See the README, "The CLI goes blind under a
   discovery server".
 
   Usage on both laptop and Jetson:

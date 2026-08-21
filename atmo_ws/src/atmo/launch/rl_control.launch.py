@@ -63,7 +63,7 @@ def generate_launch_description():
                 description=(
                     "Launch the drive (wheel) node. DEFAULT FALSE since "
                     "2026-08-17: the drive RoboClaw is dead (regen through the "
-                    "12V regulator -- see docs/session_state.md). Set true only "
+                    "12V regulator -- see the README). Set true only "
                     "after a replacement board is installed BEHIND the battery "
                     "bypass diode."
                 ),

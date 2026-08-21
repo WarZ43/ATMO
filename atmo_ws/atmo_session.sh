@@ -35,7 +35,7 @@ Usage: atmo_session.sh PROFILE [options]
 PROFILE:
   shadow    policy runs, NO command publishers are created at all
   sensor    connectivity only, no command publishers
-  action    single-axis action test (see src/atmo/HARDWARE_TESTS.md)
+  action    single-axis action test (see the README)
   ground    closed-loop policy on TILT AND WHEELS ONLY, rotors cut, no mocap
   policy    full closed-loop policy run
 
@@ -60,7 +60,7 @@ Options:
                                and falls back to virtual. ground default: auto
   --drive on|off               launch the wheel node (default: off -- the
                                drive RoboClaw died 2026-08-17, regen through
-                               the 12V regulator; see docs/session_state.md.
+                               the 12V regulator; see the README.
                                Turn on only after the replacement board is in,
                                behind the battery bypass diode)
   --hover-only                 hold station in FLIGHT at the CURRENT measured
